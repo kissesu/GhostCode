@@ -1,0 +1,24 @@
+{
+  "name": "ghostcode",
+  "version": "0.1.0",
+  "description": "GhostCode 多 Agent 协作开发平台 - Claude Code Plugin",
+  "author": "Atlas.oi",
+  "license": "MIT",
+  "repository": "https://github.com/atlas-oi/GhostCode",
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "multi-agent",
+    "ghostcode",
+    "daemon"
+  ],
+  "skills": "./skills/",
+  "permissions": {
+    "filesystem": {
+      "read": true,
+      "write": false
+    },
+    "network": false,
+    "shell": false
+  }
+}

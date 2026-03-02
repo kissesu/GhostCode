@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "ghostcode://schemas/daemon-response",
+  "title": "DaemonResponse",
+  "description": "Rust Daemon 返回给 TS Plugin 的操作结果",
+  "type": "object",
+  "required": ["v", "ok", "result"],
+  "properties": {
+    "v": {
+      "type": "integer",
+      "const": 1,
+      "description": "协议版本号，固定为 1"
+    },
+    "ok": {
+      "type": "boolean",
+      "description": "操作是否成功"
+    },
+    "result": {
+      "description": "成功时的返回值，任意 JSON 值"
+    },
+    "error": {
+      "type": "object",
+      "description": "失败时的错误信息",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "错误码（如 NOT_FOUND, INVALID_ARGS）"
+        },
+        "message": {
+          "type": "string",
+          "description": "可读的错误描述"
+        }
+      },
+      "required": ["code", "message"]
+    }
+  },
+  "additionalProperties": false
+}

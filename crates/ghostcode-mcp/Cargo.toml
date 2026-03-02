@@ -1,0 +1,27 @@
+# ghostcode-mcp - MCP Server
+#
+# Model Context Protocol 工具接口
+# 暴露 GhostCode 功能为 MCP 工具供 Claude Code 调用
+#
+# @author Atlas.oi
+# @date 2026-02-28
+
+[package]
+name = "ghostcode-mcp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "GhostCode MCP Server（Claude Code 工具接口）"
+
+[dependencies]
+ghostcode-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

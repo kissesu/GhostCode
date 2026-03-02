@@ -1,0 +1,159 @@
+# GhostCode CI 主流水线
+#
+# 触发条件：push 到 main / PR 到 main
+# 包含三个 job：
+#   build-rust  — Rust workspace 编译 + 测试 + clippy
+#   build-ts    — TypeScript Plugin 编译 + 测试
+#   mutation    — cargo mutants（定期，不阻塞 PR）
+#
+# @author Atlas.oi
+# @date 2026-03-01
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  # 固定 Rust toolchain 版本，与 Cargo.toml rust-version 一致
+  RUST_VERSION: "1.75"
+  # pnpm 版本
+  PNPM_VERSION: "9"
+
+jobs:
+  # ============================================================
+  # job: build-rust
+  # 编译 Rust workspace + 运行测试 + clippy 检查
+  # 在 ubuntu-latest 执行（CI lint/test 不需要跨平台，快速反馈）
+  # ============================================================
+  build-rust:
+    name: Rust 构建与测试
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 安装指定版本 Rust toolchain
+      - name: 安装 Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      # 缓存 Rust 编译产物（cargo registry + build cache）
+      # 参考 Swatinem/rust-cache 官方推荐配置
+      - name: 缓存 Rust 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 使用 workspace 模式，对所有 crate 共享缓存
+          workspaces: ". -> target"
+
+      # 编译整个 workspace（debug 模式，速度优先）
+      - name: cargo build
+        run: cargo build --workspace
+
+      # 运行所有测试（包含 unit tests + integration tests）
+      - name: cargo test
+        run: cargo test --workspace
+
+      # clippy 静态分析，-D warnings 将任何 warning 升级为 error
+      # 这是代码质量的硬性门禁
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # 格式检查（不修改，只检测）
+      - name: cargo fmt check
+        run: cargo fmt --all -- --check
+
+  # ============================================================
+  # job: build-ts
+  # TypeScript Plugin 编译 + 测试
+  # 在 ubuntu-latest 执行
+  # ============================================================
+  build-ts:
+    name: TypeScript 构建与测试
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 安装 Node.js（LTS）
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 安装 pnpm（使用 corepack）
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      # 获取 pnpm store 路径（用于缓存 key）
+      - name: 获取 pnpm store 路径
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      # 缓存 pnpm store
+      - name: 缓存 pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      # 安装依赖
+      - name: pnpm install
+        working-directory: src/plugin
+        run: pnpm install --frozen-lockfile
+
+      # 编译 TypeScript
+      - name: pnpm build
+        working-directory: src/plugin
+        run: pnpm build
+
+      # 运行单元测试（vitest）
+      - name: pnpm test
+        working-directory: src/plugin
+        run: pnpm test
+
+  # ============================================================
+  # job: mutation
+  # cargo mutants 变异测试（定期执行，不阻塞 PR）
+  # 仅在 schedule 事件触发，不在 push/PR 中运行
+  # ============================================================
+  mutation:
+    name: Mutation 测试
+    runs-on: ubuntu-latest
+    # 仅在定期调度时运行，不阻塞 PR CI
+    if: github.event_name == 'schedule'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: 缓存 Rust 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # 安装 cargo-mutants
+      - name: 安装 cargo-mutants
+        run: cargo install cargo-mutants
+
+      # 运行变异测试，单个变体超时 60 秒
+      - name: cargo mutants
+        run: cargo mutants --workspace --timeout 60

@@ -1,0 +1,57 @@
+# GhostCode 定期调度工作流
+#
+# 每周一 UTC 02:00 触发 mutation 测试
+# mutation 测试耗时较长（数分钟到数十分钟），不适合放在 PR CI 中
+#
+# @author Atlas.oi
+# @date 2026-03-01
+
+name: Scheduled
+
+on:
+  schedule:
+    # 每周一 UTC 02:00 = 北京时间周一 10:00
+    - cron: "0 2 * * 1"
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  # 调用 ci.yml 中的 mutation job
+  # 通过 workflow_call 复用，避免重复定义
+  mutation:
+    name: 定期 Mutation 测试
+    runs-on: ubuntu-latest
+
+    env:
+      RUST_VERSION: "1.75"
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: 缓存 Rust 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: 安装 cargo-mutants
+        run: cargo install cargo-mutants
+
+      # 运行变异测试，单个变体超时 60 秒
+      # --output 将结果写入 mutation-results/ 目录便于 artifact 上传
+      - name: cargo mutants
+        run: cargo mutants --workspace --timeout 60 --output mutation-results
+
+      # 上传变异测试结果为 artifact
+      - name: 上传 mutation 结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-results-${{ github.run_id }}
+          path: mutation-results/
+          retention-days: 30

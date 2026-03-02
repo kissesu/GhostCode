@@ -1,0 +1,66 @@
+# GhostCode - 多 Agent 协作开发平台
+#
+# Cargo workspace 根配置
+# 统一管理所有 crate 的依赖版本
+#
+# @author Atlas.oi
+# @date 2026-02-28
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/ghostcode-types",
+    "crates/ghostcode-ledger",
+    "crates/ghostcode-daemon",
+    "crates/ghostcode-mcp",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["Atlas.oi"]
+
+[workspace.dependencies]
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 文件锁（单实例锁 + 账本写锁）
+fs2 = "0.4"
+
+# Unix PTY 操作（macOS/Linux）
+nix = { version = "0.29", features = ["term", "signal", "process"] }
+
+# UUID v4 事件 ID 生成
+uuid = { version = "1", features = ["v4"] }
+
+# ISO 8601 UTC 时间戳
+chrono = { version = "0.4", features = ["serde"] }
+
+# CLI 命令行参数解析
+clap = { version = "4", features = ["derive"] }
+
+# 结构化日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# 错误处理
+thiserror = "2"
+anyhow = "1"
+
+# 属性基测试（PBT）
+proptest = "1"
+
+# YAML 配置序列化
+serde_yaml = "0.9"
+
+# 测试用临时目录
+tempfile = "3"
+
+# workspace 内部 crate 引用
+ghostcode-types = { path = "crates/ghostcode-types" }
+ghostcode-ledger = { path = "crates/ghostcode-ledger" }

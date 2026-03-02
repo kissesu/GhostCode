@@ -1,0 +1,29 @@
+# ghostcode-ledger - 事件账本
+#
+# Append-only 事件账本实现
+# 负责事件的持久化存储和读取
+#
+# @author Atlas.oi
+# @date 2026-02-28
+
+[package]
+name = "ghostcode-ledger"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "GhostCode append-only 事件账本"
+
+[dependencies]
+ghostcode-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+fs2 = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+ghostcode-types = { workspace = true, features = ["testutil"] }

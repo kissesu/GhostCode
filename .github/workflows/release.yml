@@ -1,0 +1,249 @@
+# GhostCode Release 流水线
+#
+# 触发条件：推送 v* tag（如 v0.1.0）
+# 步骤：
+#   1. build-binaries — 矩阵并行构建三平台 Rust 二进制
+#   2. package        — 下载二进制 + 编译 TS + 组装 Plugin 包
+#   3. publish        — 创建 GitHub Release + 发布 npm 包
+#
+# 所需 Secrets:
+#   NPM_TOKEN — npm 发布 token（Settings > Secrets > Actions）
+#
+# @author Atlas.oi
+# @date 2026-03-02
+
+name: Release
+
+on:
+  push:
+    tags:
+      # 匹配 v0.1.0、v1.0.0-beta.1 等格式
+      - "v*"
+
+env:
+  RUST_VERSION: "1.75"
+  PNPM_VERSION: "9"
+
+jobs:
+  # ============================================================
+  # job: build-binaries（矩阵）
+  # 三平台并行构建 ghostcode-daemon 二进制
+  # 注意：Cargo.toml 无 [[bin]] section，二进制名默认等于包名
+  # ============================================================
+  build-binaries:
+    name: 构建 ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS ARM（Apple Silicon）
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            binary_name: ghostcoded-darwin-arm64
+
+          # macOS Intel（GitHub 提供的 Intel runner 是 macos-13）
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            binary_name: ghostcoded-darwin-x64
+
+          # Linux x64（原生构建）
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            binary_name: ghostcoded-linux-x64
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Rust 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          # 区分不同 target 的缓存
+          key: ${{ matrix.target }}
+
+      # release 模式构建 ghostcode-daemon 二进制
+      # --target 指定交叉编译目标
+      # -p ghostcode-daemon 只编译 daemon 包
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }} -p ghostcode-daemon
+
+      # 重命名二进制为包含平台信息的名称
+      # Cargo.toml 无 [[bin]] section，二进制名默认为包名 ghostcode-daemon
+      - name: 重命名二进制
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/ghostcode-daemon \
+             ${{ matrix.binary_name }}
+
+      # 上传二进制为 artifact，供 package job 汇总
+      - name: 上传二进制 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ matrix.binary_name }}
+          retention-days: 1
+
+  # ============================================================
+  # job: package
+  # 下载三平台二进制 + 编译 TS + 组装 Plugin npm 包
+  # ============================================================
+  package:
+    name: 打包 Plugin
+    runs-on: ubuntu-latest
+    needs: build-binaries
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      # 下载三平台二进制 artifact
+      - name: 下载所有二进制 artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: binaries/
+
+      # 验证三个二进制均已下载
+      - name: 验证二进制文件
+        run: |
+          ls -la binaries/
+          test -f binaries/ghostcoded-darwin-arm64 || (echo "缺少 darwin-arm64 二进制" && exit 1)
+          test -f binaries/ghostcoded-darwin-x64   || (echo "缺少 darwin-x64 二进制" && exit 1)
+          test -f binaries/ghostcoded-linux-x64    || (echo "缺少 linux-x64 二进制" && exit 1)
+
+      # 安装 TS 依赖并编译
+      - name: pnpm install
+        working-directory: src/plugin
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm build
+        working-directory: src/plugin
+        run: pnpm build
+
+      # 执行打包脚本，将二进制 + TS 产物组装为 Plugin 包
+      - name: 打包 Plugin
+        env:
+          # 从 tag 中提取版本号（去掉 v 前缀）
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          bash scripts/pack-plugin.sh \
+            --binaries-dir binaries/ \
+            --ts-dist src/plugin/dist/ \
+            --version "${RELEASE_VERSION#v}" \
+            --output ghostcode-plugin/
+
+      # 验证 Plugin 包结构
+      - name: 验证 Plugin 包结构
+        run: |
+          echo "Plugin 包内容："
+          find ghostcode-plugin/ -type f | sort
+          test -f ghostcode-plugin/package.json          || (echo "缺少 package.json" && exit 1)
+          test -f ghostcode-plugin/dist/index.js         || (echo "缺少 dist/index.js" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-darwin-arm64 || (echo "缺少 darwin-arm64 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-darwin-x64   || (echo "缺少 darwin-x64 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-linux-x64    || (echo "缺少 linux-x64 二进制" && exit 1)
+          test -f ghostcode-plugin/.claude/settings.json        || (echo "缺少 .claude/settings.json" && exit 1)
+
+      # 打包为 .tgz 用于 Release 附件
+      - name: npm pack
+        working-directory: ghostcode-plugin
+        run: npm pack
+
+      # 上传 Plugin 包为 artifact
+      - name: 上传 Plugin 包
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-package
+          path: ghostcode-plugin/*.tgz
+          retention-days: 7
+
+      # 上传整个 ghostcode-plugin 目录（供 publish job 使用）
+      - name: 上传 Plugin 目录
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-dir
+          path: ghostcode-plugin/
+          retention-days: 1
+
+  # ============================================================
+  # job: publish
+  # 创建 GitHub Release + 发布 npm 包
+  # ============================================================
+  publish:
+    name: 发布
+    runs-on: ubuntu-latest
+    needs: package
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 下载 Plugin 包（.tgz）用于 Release 附件
+      - name: 下载 Plugin 包
+        uses: actions/download-artifact@v4
+        with:
+          name: plugin-package
+          path: release-assets/
+
+      # 下载三平台独立二进制用于 Release 附件
+      - name: 下载所有二进制
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: release-assets/
+
+      # 下载 Plugin 目录（用于 npm publish）
+      - name: 下载 Plugin 目录
+        uses: actions/download-artifact@v4
+        with:
+          name: plugin-dir
+          path: ghostcode-plugin/
+
+      # 创建 GitHub Release
+      # softprops/action-gh-release 是社区广泛使用的方案
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+      # 安装 Node.js（发布 npm 用）
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      # 发布到 npm
+      - name: npm publish
+        working-directory: ghostcode-plugin
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

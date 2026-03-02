@@ -1,0 +1,32 @@
+# ghostcode-types - 核心类型定义
+#
+# 定义 Event, DaemonRequest, DaemonResponse 等核心数据结构
+# 被所有其他 crate 依赖
+#
+# @author Atlas.oi
+# @date 2026-02-28
+
+[package]
+name = "ghostcode-types"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "GhostCode 核心类型定义（Event, Request, Response）"
+
+[features]
+# testutil feature: 暴露 proptest 策略生成器供其他 crate 的测试使用
+testutil = ["dep:proptest"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+# proptest 作为可选依赖，通过 testutil feature 启用
+proptest = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

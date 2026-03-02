@@ -1,0 +1,37 @@
+# ghostcode-daemon - Daemon 主进程
+#
+# GhostCode 常驻守护进程
+# 负责 Agent 管理、消息路由、IPC 通信
+#
+# @author Atlas.oi
+# @date 2026-02-28
+
+[package]
+name = "ghostcode-daemon"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "GhostCode 常驻守护进程（Agent 管理 + 消息路由 + IPC）"
+
+[dependencies]
+ghostcode-types = { workspace = true }
+ghostcode-ledger = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+nix = { workspace = true }
+fs2 = { workspace = true }
+serde_yaml = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
