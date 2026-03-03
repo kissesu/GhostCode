@@ -14,10 +14,12 @@ use ghostcode_router::task_format::parse_task_format;
 use ghostcode_types::ipc::{DaemonRequest, DaemonResponse};
 use uuid::Uuid;
 
+use crate::cost::{CostSource, UsageRecord};
 use crate::server::AppState;
+use crate::verification::VerifyEvent;
 use crate::{lifecycle, messaging::{send, inbox}, runner::HeadlessStatus};
 
-/// Phase 1 + Phase 2 所有已知的 op 字符串（26 个）
+/// Phase 1 + Phase 2 + Phase 3 所有已知的 op 字符串（32 个）
 pub const KNOWN_OPS: &[&str] = &[
     // 核心
     "ping",
@@ -51,6 +53,15 @@ pub const KNOWN_OPS: &[&str] = &[
     "route_status",
     "route_cancel",
     "session_list",
+    // 验证（Phase 3）
+    "verification_start",
+    "verification_status",
+    "verification_cancel",
+    // HUD（Phase 3）
+    "hud_snapshot",
+    // 成本（Phase 3）
+    "cost_record",
+    "cost_summary",
 ];
 
 /// 分发请求到对应处理器
@@ -100,6 +111,18 @@ pub async fn dispatch(state: &AppState, req: DaemonRequest) -> DaemonResponse {
         "route_status" => handle_route_status(state, &req.args).await,
         "route_cancel" => handle_route_cancel(state, &req.args).await,
         "session_list" => handle_session_list(state, &req.args).await,
+
+        // === 验证（Phase 3） ===
+        "verification_start" => handle_verification_start(state, &req.args),
+        "verification_status" => handle_verification_status(state, &req.args),
+        "verification_cancel" => handle_verification_cancel(state, &req.args),
+
+        // === HUD（Phase 3） ===
+        "hud_snapshot" => handle_hud_snapshot(state, &req.args),
+
+        // === 成本（Phase 3） ===
+        "cost_record" => handle_cost_record(state, &req.args),
+        "cost_summary" => handle_cost_summary(state, &req.args),
 
         // === 未知 op ===
         _ => DaemonResponse::err("UNKNOWN_OP", format!("unknown operation: {}", req.op)),
@@ -696,7 +719,7 @@ async fn handle_route_cancel(state: &AppState, args: &serde_json::Value) -> Daem
 ///
 /// 必填参数：group_id
 ///
-/// @param state - 共享应用状态
+/// @param _state - 共享应用状态（当前未使用）
 /// @param args - 请求参数
 async fn handle_session_list(_state: &AppState, args: &serde_json::Value) -> DaemonResponse {
     // 提取必填参数
@@ -715,4 +738,296 @@ async fn handle_session_list(_state: &AppState, args: &serde_json::Value) -> Dae
         "sessions": [],
         "group_id": group_id,
     }))
+}
+
+// ============================================
+// 验证 Handler（Phase 3 脚手架）
+// ============================================
+
+/// verification_start handler
+///
+/// 启动 Ralph 验证循环，创建新运行记录。
+///
+/// 业务逻辑：
+/// 1. 提取必填参数 group_id、run_id，缺失返回 INVALID_ARGS
+/// 2. 验证 ID 格式合法性（防路径遍历）
+/// 3. 加锁调用 start_run 创建新运行（已存在则返回 VERIFICATION_ERROR）
+/// 4. clone RunState 后释放锁，序列化返回
+///
+/// 必填参数：group_id, run_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_verification_start(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+    let run_id = match args["run_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: run_id"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+    if let Err(resp) = validate_id(run_id, "run_id") { return resp; }
+
+    let mut store = state.verification.lock().unwrap_or_else(|e| e.into_inner());
+    match store.start_run(group_id.to_string(), run_id.to_string()) {
+        Ok(()) => {
+            // 获取刚创建的 RunState 并 clone，避免持有借用跨越 drop
+            let run_state = store.get_run(group_id, run_id).cloned();
+            drop(store);
+            match run_state {
+                Some(s) => DaemonResponse::ok(serde_json::to_value(s).unwrap_or_default()),
+                None => DaemonResponse::ok(serde_json::json!({ "started": true })),
+            }
+        }
+        Err(e) => DaemonResponse::err("VERIFICATION_ERROR", e.to_string()),
+    }
+}
+
+/// verification_status handler
+///
+/// 查询指定验证运行的当前状态。
+///
+/// 业务逻辑：
+/// 1. 提取必填参数 group_id、run_id，缺失返回 INVALID_ARGS
+/// 2. 验证 ID 格式合法性
+/// 3. 加锁查询 get_run，不存在返回 NOT_FOUND
+/// 4. clone RunState 后释放锁，序列化返回
+///
+/// 必填参数：group_id, run_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_verification_status(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+    let run_id = match args["run_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: run_id"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+    if let Err(resp) = validate_id(run_id, "run_id") { return resp; }
+
+    let store = state.verification.lock().unwrap_or_else(|e| e.into_inner());
+    match store.get_run(group_id, run_id) {
+        // clone RunState，确保可以安全释放锁后序列化
+        Some(s) => DaemonResponse::ok(serde_json::to_value(s.clone()).unwrap_or_default()),
+        None => DaemonResponse::err(
+            "NOT_FOUND",
+            format!("验证运行 ({}, {}) 不存在", group_id, run_id),
+        ),
+    }
+}
+
+/// verification_cancel handler
+///
+/// 取消进行中的验证运行，将状态推进到 Cancelled 终态。
+///
+/// 业务逻辑：
+/// 1. 提取必填参数 group_id、run_id，缺失返回 INVALID_ARGS
+/// 2. 验证 ID 格式合法性
+/// 3. 加锁调用 apply_event(Cancel) 进行状态迁移
+/// 4. 成功返回 { cancelled: true }
+///
+/// 必填参数：group_id, run_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_verification_cancel(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+    let run_id = match args["run_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: run_id"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+    if let Err(resp) = validate_id(run_id, "run_id") { return resp; }
+
+    let mut store = state.verification.lock().unwrap_or_else(|e| e.into_inner());
+    match store.apply_event(group_id, run_id, VerifyEvent::Cancel) {
+        Ok(()) => DaemonResponse::ok(serde_json::json!({ "cancelled": true })),
+        // 运行不存在：与 verification_status 保持一致，返回 NOT_FOUND
+        Err(crate::verification::VerifyError::RunNotFound { .. }) => DaemonResponse::err(
+            "NOT_FOUND",
+            format!("验证运行 ({}, {}) 不存在", group_id, run_id),
+        ),
+        // 终态下取消视为幂等成功（cancel 语义：确保运行不再进行）
+        // Running 状态下 Cancel 一定成功，所以 IllegalOperation 只会来自终态
+        Err(crate::verification::VerifyError::IllegalOperation { .. }) => {
+            DaemonResponse::ok(serde_json::json!({ "cancelled": true }))
+        }
+        Err(e) => DaemonResponse::err("VERIFICATION_ERROR", e.to_string()),
+    }
+}
+
+// ============================================
+// HUD Handler（Phase 3 脚手架）
+// ============================================
+
+/// hud_snapshot handler
+///
+/// 获取 HUD 状态栏的当前快照。
+///
+/// 业务逻辑：
+/// 1. 调用 build_hud_snapshot 同步聚合所有状态数据
+/// 2. 将快照序列化为 JSON 返回
+///
+/// 可选参数：group_id, run_id（查询验证状态）, used_tokens, max_tokens（上下文压力计算）
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_hud_snapshot(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let snapshot = crate::hud::build_hud_snapshot(state, args);
+    DaemonResponse::ok(serde_json::to_value(snapshot).unwrap_or_default())
+}
+
+// ============================================
+// 成本 Handler（Phase 3 脚手架）
+// ============================================
+
+/// cost_record handler
+///
+/// 记录一次 API 调用的成本数据
+///
+/// 业务逻辑：
+/// 1. 提取必填参数（group_id, model），缺失返回 INVALID_ARGS
+/// 2. 提取可选参数（task_id, prompt_tokens, completion_tokens, source）
+/// 3. 验证 group_id 格式
+/// 4. 构造 UsageRecord，通过 Mutex 锁调用 CostStore::record_usage
+/// 5. 返回 { recorded: true }
+///
+/// 必填参数：group_id, model
+/// 可选参数：task_id（默认 "default"）, prompt_tokens（默认 0）, completion_tokens（默认 0）, source（默认 vendor_reported）
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_cost_record(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // 提取必填参数
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+    let task_id = args["task_id"].as_str().unwrap_or("default");
+    let model = match args["model"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: model"),
+    };
+    let prompt_tokens_raw = args["prompt_tokens"].as_u64().unwrap_or(0);
+    let completion_tokens_raw = args["completion_tokens"].as_u64().unwrap_or(0);
+
+    // 范围校验：token 计数不能超过 u32::MAX，防止静默截断
+    if prompt_tokens_raw > u32::MAX as u64 {
+        return DaemonResponse::err(
+            "INVALID_ARGS",
+            format!("prompt_tokens 超出 u32 范围: {}", prompt_tokens_raw),
+        );
+    }
+    if completion_tokens_raw > u32::MAX as u64 {
+        return DaemonResponse::err(
+            "INVALID_ARGS",
+            format!("completion_tokens 超出 u32 范围: {}", completion_tokens_raw),
+        );
+    }
+    let prompt_tokens = prompt_tokens_raw as u32;
+    let completion_tokens = completion_tokens_raw as u32;
+
+    // 解析 source，默认为 VendorReported
+    // 严格枚举校验：拒绝未知 source 值，防止拼写错误污染精度标注
+    let source = match args["source"].as_str() {
+        Some("exact") => CostSource::Exact,
+        Some("estimated") => CostSource::Estimated,
+        Some("vendor_reported") | None => CostSource::VendorReported,
+        Some(unknown) => {
+            return DaemonResponse::err(
+                "INVALID_ARGS",
+                format!(
+                    "unknown source: \"{}\", expected: exact/vendor_reported/estimated",
+                    unknown
+                ),
+            )
+        }
+    };
+
+    // 验证 group_id 格式（防路径遍历）
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+
+    let usage = UsageRecord {
+        group_id: group_id.to_string(),
+        task_id: task_id.to_string(),
+        model: model.to_string(),
+        prompt_tokens,
+        completion_tokens,
+        source,
+    };
+
+    // 通过 Mutex 锁写入，释放锁后返回结果
+    let mut store = state.costs.lock().unwrap_or_else(|e| e.into_inner());
+    store.record_usage(usage);
+    drop(store);
+
+    DaemonResponse::ok(serde_json::json!({ "recorded": true }))
+}
+
+/// cost_summary handler
+///
+/// 获取成本统计汇总数据
+///
+/// 业务逻辑：
+/// 1. 提取可选参数（group_id, task_id），均为可选
+/// 2. 加锁读取 CostStore，调用 get_summary 获取过滤聚合
+/// 3. 若指定 group_id，同时调用 get_summary_by_model 返回按模型聚合
+/// 4. 返回聚合快照 + 可选的 by_model 字段
+///
+/// 可选参数：group_id（不传则全局聚合），task_id（不传则不过滤 task）
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_cost_summary(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = args["group_id"].as_str();
+    let task_id = args["task_id"].as_str();
+
+    let store = state.costs.lock().unwrap_or_else(|e| e.into_inner());
+    let summary = store.get_summary(group_id, task_id);
+
+    // 若指定了 group_id，同时返回按模型聚合数据
+    let by_model = if let Some(gid) = group_id {
+        let model_map = store.get_summary_by_model(gid, task_id);
+        let model_summaries: serde_json::Value = model_map
+            .iter()
+            .map(|(model, snap)| {
+                (
+                    model.clone(),
+                    serde_json::json!({
+                        "total_prompt_tokens": snap.total_prompt_tokens,
+                        "total_completion_tokens": snap.total_completion_tokens,
+                        "total_cost_micro": snap.total_cost_micro,
+                        "request_count": snap.request_count,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<String, serde_json::Value>>()
+            .into();
+        Some(model_summaries)
+    } else {
+        None
+    };
+    drop(store);
+
+    let mut result = serde_json::json!({
+        "total_prompt_tokens": summary.total_prompt_tokens,
+        "total_completion_tokens": summary.total_completion_tokens,
+        "total_cost_micro": summary.total_cost_micro,
+        "request_count": summary.request_count,
+    });
+
+    if let Some(by_model_val) = by_model {
+        result["by_model"] = by_model_val;
+    }
+
+    DaemonResponse::ok(result)
 }

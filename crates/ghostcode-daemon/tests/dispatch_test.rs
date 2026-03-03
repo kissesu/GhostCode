@@ -108,10 +108,17 @@ async fn stub_ops_return_not_implemented() {
                 && **op != "route_status"
                 && **op != "route_cancel"
                 && **op != "session_list"
+                // Phase 3 脚手架 op（6 个，均已实现返回空结果）
+                && **op != "verification_start"
+                && **op != "verification_status"
+                && **op != "verification_cancel"
+                && **op != "hud_snapshot"
+                && **op != "cost_record"
+                && **op != "cost_summary"
         })
         .collect();
 
-    assert_eq!(stub_ops.len(), 10, "应有 10 个占位 op (26 总 - 16 已实现)");
+    assert_eq!(stub_ops.len(), 10, "应有 10 个占位 op (32 总 - 22 已实现)");
 
     for op in stub_ops {
         let req = DaemonRequest::new(*op, serde_json::json!({}));

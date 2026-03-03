@@ -19,3 +19,6 @@ pub mod runner;
 pub mod lifecycle;
 pub mod messaging;
 pub mod routing;
+pub mod verification;
+pub mod cost;
+pub mod hud;

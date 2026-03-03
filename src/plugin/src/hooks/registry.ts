@@ -12,7 +12,8 @@ export type HookEventType =
   | "PreToolUse"
   | "PostToolUse"
   | "Notification"
-  | "Stop";
+  | "Stop"
+  | "UserPromptSubmit";
 
 // Hook 处理函数类型
 export type HookHandler = (event: unknown) => Promise<unknown> | unknown;
