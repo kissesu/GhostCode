@@ -29,4 +29,8 @@ export default defineConfig({
   // 打包模式：将所有本地模块打包进单一输出文件
   // bundle: false 会导致 daemon.js/ipc.js/hooks/index.js 不输出到 dist/
   bundle: true,
+
+  // 构建成功后复制静态资产（Skill 模板文件）到 dist 目录
+  // tsup 不会自动处理非 JS/TS 文件，需要手动复制
+  onSuccess: 'cp -r src/.claude dist/.claude',
 });

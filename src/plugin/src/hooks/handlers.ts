@@ -20,6 +20,7 @@ import { registerHook } from "./registry.js";
 import { detectMagicKeywords, resolveKeywordPriority } from "../keywords/index.js";
 import { writeKeywordState } from "../keywords/state.js";
 import type { KeywordState } from "../keywords/types.js";
+import { appendSessionContent } from "../learner/manager.js";
 
 // ============================================
 // 工作区根目录
@@ -106,6 +107,14 @@ export async function stopHandler(_event: unknown): Promise<void> {
 
   // 关闭 Daemon（幂等，未运行时静默返回）
   await stopDaemon();
+
+  // 触发 Skill Learning 分析（会话结束时提取可复用模式）
+  try {
+    const { onSessionEnd } = await import("../learner/index.js");
+    await onSessionEnd();
+  } catch {
+    // Skill Learning 失败不阻断 Stop 流程
+  }
 }
 
 /**
@@ -150,6 +159,12 @@ export async function userPromptSubmitHandler(
   if (!prompt) {
     return undefined;
   }
+
+  // ============================================
+  // C5 修复：将 prompt 内容追加到 Skill Learning 会话缓冲区
+  // 确保 onSessionEnd 能够检测到当前会话的所有用户输入模式
+  // ============================================
+  appendSessionContent(prompt);
 
   // ============================================
   // 第二步：检测 Magic Keywords
