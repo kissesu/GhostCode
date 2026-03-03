@@ -414,7 +414,7 @@ mod tests {
     // tools/list 必须返回恰好 8 个工具定义
     // --------------------------------------------------------
     #[tokio::test]
-    async fn tools_list_returns_8() {
+    async fn tools_list_returns_11() {
         let req = make_req("tools/list", serde_json::json!(2), serde_json::json!({}));
         let mut state = SessionState::default();
         let daemon_addr = std::path::Path::new("/nonexistent/daemon.sock");
@@ -423,7 +423,7 @@ mod tests {
         let resp = resp.expect("tools/list 必须返回响应");
         let result = resp.result.expect("tools/list 必须有 result");
         let tools = result["tools"].as_array().expect("tools 必须是数组");
-        assert_eq!(tools.len(), 8, "工具数量必须恰好为 8");
+        assert_eq!(tools.len(), 11, "工具数量必须恰好为 11");
     }
 
     // --------------------------------------------------------

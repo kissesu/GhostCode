@@ -9,12 +9,15 @@
 //! @author Atlas.oi
 //! @date 2026-03-01
 
+use ghostcode_router::dag::{topological_sort, TaskNode};
+use ghostcode_router::task_format::parse_task_format;
 use ghostcode_types::ipc::{DaemonRequest, DaemonResponse};
+use uuid::Uuid;
 
 use crate::server::AppState;
 use crate::{lifecycle, messaging::{send, inbox}, runner::HeadlessStatus};
 
-/// Phase 1 所有已知的 op 字符串（21 个）
+/// Phase 1 + Phase 2 所有已知的 op 字符串（26 个）
 pub const KNOWN_OPS: &[&str] = &[
     // 核心
     "ping",
@@ -42,6 +45,12 @@ pub const KNOWN_OPS: &[&str] = &[
     // Headless
     "headless_status",
     "headless_set_status",
+    // 路由（Phase 2）
+    "route_task",
+    "route_task_parallel",
+    "route_status",
+    "route_cancel",
+    "session_list",
 ];
 
 /// 分发请求到对应处理器
@@ -84,6 +93,13 @@ pub async fn dispatch(state: &AppState, req: DaemonRequest) -> DaemonResponse {
         // === Headless ===
         "headless_status" => handle_headless_status(state, &req.args).await,
         "headless_set_status" => handle_headless_set_status(state, &req.args).await,
+
+        // === 路由（Phase 2） ===
+        "route_task" => handle_route_task(state, &req.args).await,
+        "route_task_parallel" => handle_route_task_parallel(state, &req.args).await,
+        "route_status" => handle_route_status(state, &req.args).await,
+        "route_cancel" => handle_route_cancel(state, &req.args).await,
+        "session_list" => handle_session_list(state, &req.args).await,
 
         // === 未知 op ===
         _ => DaemonResponse::err("UNKNOWN_OP", format!("unknown operation: {}", req.op)),
@@ -467,4 +483,236 @@ fn stub(op: &str) -> DaemonResponse {
         "NOT_IMPLEMENTED",
         format!("operation '{}' is not yet implemented", op),
     )
+}
+
+// ============================================
+// 路由 Handler 实现（Phase 2）
+// ============================================
+
+/// route_task handler
+///
+/// 提交单个任务到指定后端，注册到路由状态表，返回 task_id。
+///
+/// 业务逻辑：
+/// 1. 提取必填参数（group_id, task_text）和可选参数（backend, workdir）
+/// 2. 验证 group_id 格式（防路径遍历）
+/// 3. 通过 SovereigntyGuard 检查后端写入权限
+/// 4. 生成 UUID task_id，注册到 RoutingState
+/// 5. 返回 { task_id, backend, can_write }
+///
+/// 必填参数：group_id, task_text
+/// 可选参数：backend（默认 "claude"）, workdir
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+async fn handle_route_task(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // 提取必填参数
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+    let task_text = match args["task_text"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: task_text"),
+    };
+
+    // 防路径遍历校验
+    if let Err(resp) = validate_id(group_id, "group_id") {
+        return resp;
+    }
+
+    // 可选参数
+    let backend = args["backend"].as_str().unwrap_or("claude");
+    let workdir = args["workdir"].as_str();
+
+    // 检查后端写入权限（代码主权守卫）
+    let can_write = state.routing.sovereignty.can_write(backend);
+
+    // 生成 UUID task_id
+    let task_id = Uuid::new_v4().to_string();
+
+    // 注册任务到路由状态表
+    state.routing.register_task(group_id, &task_id, backend).await;
+
+    DaemonResponse::ok(serde_json::json!({
+        "task_id": task_id,
+        "backend": backend,
+        "can_write": can_write,
+        "group_id": group_id,
+        "task_text": task_text,
+        "workdir": workdir,
+    }))
+}
+
+/// route_task_parallel handler
+///
+/// 提交并行任务集合（---TASK---/---CONTENT--- 格式），验证 DAG 依赖，注册到路由状态表。
+///
+/// 业务逻辑：
+/// 1. 提取必填参数（group_id, tasks_format）
+/// 2. 验证 group_id 格式
+/// 3. 用 parse_task_format() 解析任务格式文本
+/// 4. 用 topological_sort() 验证 DAG，检测循环依赖
+/// 5. 生成并行任务组 task_id，注册到 RoutingState
+/// 6. 返回 { task_id, task_count, layers }
+///
+/// 必填参数：group_id, tasks_format
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+async fn handle_route_task_parallel(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // 提取必填参数
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+    let tasks_format = match args["tasks_format"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: tasks_format"),
+    };
+
+    // 防路径遍历校验
+    if let Err(resp) = validate_id(group_id, "group_id") {
+        return resp;
+    }
+
+    // 解析任务格式文本（---TASK---/---CONTENT--- 格式）
+    let specs = match parse_task_format(tasks_format) {
+        Ok(s) => s,
+        Err(e) => return DaemonResponse::err("INVALID_ARGS", format!("任务格式解析失败: {}", e)),
+    };
+
+    let task_count = specs.len();
+
+    // 构造 DAG 节点，验证依赖关系
+    let nodes: Vec<TaskNode> = specs
+        .iter()
+        .map(|s| TaskNode {
+            id: s.id.clone(),
+            dependencies: s.dependencies.clone(),
+        })
+        .collect();
+
+    // 拓扑排序验证（检测循环依赖和缺失依赖）
+    let layers = match topological_sort(nodes) {
+        Ok(l) => l,
+        Err(e) => return DaemonResponse::err("INVALID_ARGS", format!("DAG 验证失败: {}", e)),
+    };
+
+    let layer_count = layers.len();
+
+    // 生成并行任务组的 task_id，并注册为 pending
+    let task_id = Uuid::new_v4().to_string();
+    state.routing.register_task(group_id, &task_id, "parallel").await;
+
+    DaemonResponse::ok(serde_json::json!({
+        "task_id": task_id,
+        "task_count": task_count,
+        "layers": layer_count,
+        "group_id": group_id,
+    }))
+}
+
+/// route_status handler
+///
+/// 查询指定路由任务的当前状态。
+///
+/// 业务逻辑：
+/// 1. 提取必填参数（group_id, task_id）
+/// 2. 从 RoutingState 查询任务状态
+/// 3. 存在则返回 RouteTaskState，不存在则返回 NOT_FOUND 错误
+///
+/// 必填参数：group_id, task_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+async fn handle_route_status(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // 提取必填参数
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+    let task_id = match args["task_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: task_id"),
+    };
+
+    if let Err(resp) = validate_id(group_id, "group_id") {
+        return resp;
+    }
+
+    match state.routing.get_task(group_id, task_id).await {
+        Some(task_state) => DaemonResponse::ok(
+            serde_json::to_value(task_state).unwrap_or_default(),
+        ),
+        None => DaemonResponse::err(
+            "NOT_FOUND",
+            format!("路由任务 '{}' 不存在", task_id),
+        ),
+    }
+}
+
+/// route_cancel handler
+///
+/// 取消指定路由任务（标记为 cancelled），幂等操作。
+///
+/// 业务逻辑：
+/// 1. 提取必填参数（group_id, task_id）
+/// 2. 调用 RoutingState::cancel_task()，幂等取消
+/// 3. 始终返回 { cancelled: true }（任务存在或已取消均视为成功）
+///
+/// 必填参数：group_id, task_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+async fn handle_route_cancel(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // 提取必填参数
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+    let task_id = match args["task_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: task_id"),
+    };
+
+    if let Err(resp) = validate_id(group_id, "group_id") {
+        return resp;
+    }
+
+    // 取消任务（幂等：不存在时 cancel_task 返回 false，但仍视为成功）
+    state.routing.cancel_task(group_id, task_id).await;
+
+    DaemonResponse::ok(serde_json::json!({
+        "cancelled": true,
+        "task_id": task_id,
+    }))
+}
+
+/// session_list handler
+///
+/// 列出指定 Group 的所有 Agent 会话。
+/// 当前返回空列表框架，SessionStore 集成在后续迭代中完成。
+///
+/// 必填参数：group_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+async fn handle_session_list(_state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // 提取必填参数
+    let group_id = match args["group_id"].as_str() {
+        Some(v) => v,
+        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
+    };
+
+    if let Err(resp) = validate_id(group_id, "group_id") {
+        return resp;
+    }
+
+    // SessionStore 集成在后续迭代完成，当前返回空框架
+    // 参考: ghostcode-router/src/session.rs - SessionStore 实现
+    DaemonResponse::ok(serde_json::json!({
+        "sessions": [],
+        "group_id": group_id,
+    }))
 }

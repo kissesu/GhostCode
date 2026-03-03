@@ -13,6 +13,8 @@
  */
 
 import * as net from "node:net";
+import type { StreamEvent, StreamCallbacks } from "./router/streaming";
+import { parseStreamEvent, StreamingHandler } from "./router/streaming";
 
 // ============================================
 // 协议类型定义
@@ -319,6 +321,217 @@ class IpcClient {
       this._socket = null;
     }
   }
+
+  /**
+   * 发送流式请求到 Daemon，持续读取多行 JSON 事件直到流结束
+   *
+   * 业务逻辑说明：
+   * 1. 串行化执行（同一时刻只有 1 个 in-flight 请求）
+   * 2. 发送请求后持续监听 socket data 事件
+   * 3. 每收到完整行，传给 StreamingHandler.handleLine() 解析并分发回调
+   * 4. StreamingHandler.isComplete() 为 true 时结束监听，返回 StreamResponse
+   * 5. 超时（REQUEST_TIMEOUT_MS）时终止并抛出 IpcTimeoutError
+   *
+   * @param op - 操作名称
+   * @param args - 操作参数
+   * @param callbacks - 流式事件回调集合
+   * @returns StreamResponse 包含所有收到的事件和锁定的 sessionId
+   */
+  async sendStream(
+    op: string,
+    args: Record<string, unknown>,
+    callbacks: StreamCallbacks
+  ): Promise<StreamResponse> {
+    const result = this._pending.then(() =>
+      this._doSendStream(op, args, callbacks)
+    );
+    this._pending = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  /**
+   * 实际执行流式请求
+   */
+  private async _doSendStream(
+    op: string,
+    args: Record<string, unknown>,
+    callbacks: StreamCallbacks
+  ): Promise<StreamResponse> {
+    await this._ensureConnected();
+
+    const sock = this._socket!;
+    const request: DaemonRequest = { v: 1, op, args };
+    const payload = JSON.stringify(request) + "\n";
+
+    const handler = new StreamingHandler(callbacks);
+    const collectedEvents: StreamEvent[] = [];
+
+    // ============================================
+    // 包装原有 handleLine 收集所有事件，同时触发回调
+    // ============================================
+    const wrappedCallbacks: StreamCallbacks = {
+      onInit: (ev) => {
+        collectedEvents.push(ev);
+        callbacks.onInit?.(ev);
+      },
+      onProgress: (ev) => {
+        collectedEvents.push(ev);
+        callbacks.onProgress?.(ev);
+      },
+      onAgentMessage: (ev) => {
+        collectedEvents.push(ev);
+        callbacks.onAgentMessage?.(ev);
+      },
+      onComplete: (ev) => {
+        collectedEvents.push(ev);
+        callbacks.onComplete?.(ev);
+      },
+      onError: (ev) => {
+        collectedEvents.push(ev);
+        callbacks.onError?.(ev);
+      },
+    };
+
+    const collectHandler = new StreamingHandler(wrappedCallbacks);
+
+    return new Promise<StreamResponse>((resolve, reject) => {
+      let settled = false;
+      let streamBuffer = "";
+
+      // 超时保护
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (this._socket !== null) {
+          this._socket.destroy();
+          this._socket = null;
+        }
+        this._lineBuffer = "";
+        reject(new IpcTimeoutError(op, REQUEST_TIMEOUT_MS));
+      }, REQUEST_TIMEOUT_MS);
+
+      // 流式 data 事件处理器（临时注册，流结束后移除）
+      const onData = (chunk: string) => {
+        streamBuffer += chunk;
+
+        // 防止缓冲区无限增长（4MB 上限，与 _setupSocket 保持一致）
+        if (streamBuffer.length > 4 * 1024 * 1024) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (this._socket !== null) {
+            this._socket.destroy();
+            this._socket = null;
+          }
+          this._lineBuffer = "";
+          reject(new IpcProtocolError("流式响应缓冲区超过 4MB 上限"));
+          return;
+        }
+
+        // 处理缓冲区中所有完整行
+        let newlineIndex: number;
+        while ((newlineIndex = streamBuffer.indexOf("\n")) !== -1) {
+          const line = streamBuffer.slice(0, newlineIndex);
+          streamBuffer = streamBuffer.slice(newlineIndex + 1);
+
+          // 兼容单行 DaemonResponse 回退模式：
+          // 当前 Daemon 可能返回标准 DaemonResponse 而非流式事件，
+          // 检测到标准响应时自动结束流，避免挂死
+          try {
+            const parsed = JSON.parse(line);
+            if (
+              typeof parsed === "object" &&
+              parsed !== null &&
+              "v" in parsed &&
+              "ok" in parsed &&
+              "result" in parsed
+            ) {
+              // 收到标准 DaemonResponse，视为流结束
+              if (settled) return;
+              settled = true;
+              cleanup();
+              resolve({
+                events: collectedEvents,
+                sessionId: collectHandler.getSessionId(),
+              });
+              return;
+            }
+          } catch {
+            // 不是合法 JSON 或不是 DaemonResponse，继续按流式处理
+          }
+
+          collectHandler.handleLine(line);
+
+          // 检查流是否结束（收到 complete/error 事件）
+          if (collectHandler.isComplete()) {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve({
+              events: collectedEvents,
+              sessionId: collectHandler.getSessionId(),
+            });
+            return;
+          }
+        }
+      };
+
+      const onDisconnect = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        this._socket = null;
+        this._lineBuffer = "";
+        reject(
+          new IpcConnectionError(
+            this._socketPath,
+            err ?? new Error("流式响应期间连接意外断开")
+          )
+        );
+      };
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        sock.removeListener("data", onData);
+        sock.removeListener("close", onCloseHandler);
+        sock.removeListener("error", onErrorHandler);
+        // 恢复原有的 data 监听器（_setupSocket 的行缓冲逻辑）
+        // 注：_setupSocket 在连接建立时注册了 data 事件处理器
+        // 清空残留缓冲，防止流式数据污染下次普通请求
+        this._lineBuffer = "";
+      };
+
+      const onCloseHandler = () => onDisconnect();
+      const onErrorHandler = (err: Error) => onDisconnect(err);
+
+      // 暂停原有的 data 监听器，防止与流式监听器冲突
+      // _setupSocket 注册的 data 监听器可能消费流式数据导致缓冲污染
+      sock.removeAllListeners("data");
+      // 注册流式专用 data 监听器
+      sock.on("data", onData);
+      sock.once("close", onCloseHandler);
+      sock.once("error", onErrorHandler);
+
+      // 发送请求
+      sock.write(payload, "utf8");
+    });
+  }
+}
+
+// ============================================
+// 流式响应类型定义
+// ============================================
+
+/**
+ * 流式请求的聚合响应
+ * 收集流结束时所有已到达的事件和锁定的 sessionId
+ */
+export interface StreamResponse {
+  /** 流过程中收到的所有事件，按到达顺序排列 */
+  events: StreamEvent[];
+  /** 从首个携带 session_id 的事件中锁定的会话 ID，若流中无 session_id 则为 null */
+  sessionId: string | null;
 }
 
 // ============================================
@@ -375,3 +588,32 @@ export async function resetClient(): Promise<void> {
     _socketPath = "";
   }
 }
+
+/**
+ * 向 Daemon 发起流式 RPC 调用（公共 API）
+ *
+ * 在 callDaemon() 的基础上增加多行 JSON 流式支持。
+ * 已有的 callDaemon() 接口不受影响，完全向后兼容。
+ *
+ * @param op - 操作名称，如 "task.route"
+ * @param args - 操作参数（默认为 {}）
+ * @param callbacks - 流式事件回调集合
+ * @param socketPath - Unix socket 路径（可选，默认读取环境变量）
+ * @returns 流结束后的 StreamResponse（含所有事件和 sessionId）
+ */
+export async function callDaemonStream(
+  op: string,
+  args: Record<string, unknown> = {},
+  callbacks: StreamCallbacks,
+  socketPath?: string
+): Promise<StreamResponse> {
+  const resolvedPath = socketPath
+    ?? process.env["GHOSTCODE_SOCKET_PATH"]
+    ?? "";
+
+  const client = _getClient(resolvedPath);
+  return client.sendStream(op, args, callbacks);
+}
+
+// 重新导出流式相关类型，方便外部模块统一从 ipc.ts 引入
+export type { StreamEvent, StreamCallbacks } from "./router/streaming";

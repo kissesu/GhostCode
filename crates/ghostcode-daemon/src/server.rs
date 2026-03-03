@@ -22,6 +22,7 @@ use ghostcode_types::ipc::{DaemonRequest, DaemonResponse};
 
 use crate::messaging::delivery::DeliveryEngine;
 use crate::protocol::{self, ProtocolError};
+use crate::routing::RoutingState;
 use crate::runner::HeadlessSession;
 
 /// 单个请求处理超时：30 秒
@@ -45,6 +46,7 @@ pub struct DaemonConfig {
 /// - groups_dir: groups 根目录路径，用于加载 group.yaml
 /// - sessions: Headless Actor 运行时状态表（group_id + actor_id -> session）
 /// - event_tx: 事件广播通道，用于内部事件发布/订阅
+/// - routing: 路由状态管理器（Phase 2 新增，管理路由任务状态 + 代码主权守卫）
 pub struct AppState {
     /// 关闭信号
     shutdown: Notify,
@@ -57,6 +59,9 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<Event>,
     /// 投递引擎（共享给 ping/inbox_list handler 查询 has_unread）
     pub delivery: Arc<DeliveryEngine>,
+    /// 路由状态管理器（Phase 2）
+    /// 管理路由任务状态表 + SovereigntyGuard 代码主权检查
+    pub routing: Arc<RoutingState>,
 }
 
 impl AppState {
@@ -73,6 +78,7 @@ impl AppState {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
             delivery,
+            routing: Arc::new(RoutingState::new()),
         }
     }
 

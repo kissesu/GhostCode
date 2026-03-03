@@ -13,6 +13,7 @@ members = [
     "crates/ghostcode-ledger",
     "crates/ghostcode-daemon",
     "crates/ghostcode-mcp",
+    "crates/ghostcode-router",
 ]
 
 [workspace.package]
@@ -64,3 +65,4 @@ tempfile = "3"
 # workspace 内部 crate 引用
 ghostcode-types = { path = "crates/ghostcode-types" }
 ghostcode-ledger = { path = "crates/ghostcode-ledger" }
+ghostcode-router = { path = "crates/ghostcode-router" }

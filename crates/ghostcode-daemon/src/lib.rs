@@ -18,3 +18,4 @@ pub mod server;
 pub mod runner;
 pub mod lifecycle;
 pub mod messaging;
+pub mod routing;

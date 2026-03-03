@@ -16,6 +16,9 @@ pub mod inbox_list;
 pub mod inbox_mark_all_read;
 pub mod inbox_mark_read;
 pub mod message_send;
+pub mod route_cancel;
+pub mod route_status;
+pub mod route_task;
 
 use anyhow::Result;
 
@@ -123,6 +126,9 @@ pub fn all_tool_schemas() -> Vec<serde_json::Value> {
         actor_start::schema(),
         actor_stop::schema(),
         group_info::schema(),
+        route_task::schema(),
+        route_status::schema(),
+        route_cancel::schema(),
     ]
 }
 
@@ -151,6 +157,9 @@ pub async fn dispatch_tool(
         "ghostcode_actor_start"        => actor_start::execute(args, ctx).await,
         "ghostcode_actor_stop"         => actor_stop::execute(args, ctx).await,
         "ghostcode_group_info"         => group_info::execute(args, ctx).await,
+        "ghostcode_route_task"         => route_task::execute(args, ctx).await,
+        "ghostcode_route_status"       => route_status::execute(args, ctx).await,
+        "ghostcode_route_cancel"       => route_cancel::execute(args, ctx).await,
         _ => Err(ToolError::InvalidParam {
             name: "tool_name".to_string(),
             reason: format!("unknown tool: {}", tool_name),
@@ -177,9 +186,9 @@ mod tests {
     // 测试 1: all_tool_schemas 返回恰好 8 个工具定义
     // --------------------------------------------------------
     #[test]
-    fn all_schemas_returns_8_tools() {
+    fn all_schemas_returns_11_tools() {
         let schemas = all_tool_schemas();
-        assert_eq!(schemas.len(), 8, "必须恰好返回 8 个工具定义");
+        assert_eq!(schemas.len(), 11, "必须恰好返回 11 个工具定义");
 
         // 验证每个 schema 都包含 name / description / inputSchema 字段
         for schema in &schemas {
@@ -311,6 +320,9 @@ mod tests {
             "ghostcode_actor_start",
             "ghostcode_actor_stop",
             "ghostcode_group_info",
+            "ghostcode_route_task",
+            "ghostcode_route_status",
+            "ghostcode_route_cancel",
         ];
 
         let actual_names: Vec<&str> = schemas

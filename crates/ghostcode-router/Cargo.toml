@@ -1,0 +1,28 @@
+# ghostcode-router crate 配置
+#
+# 路由器模块：Backend trait + 三后端 CLI 参数构建器
+# 负责将 TaskConfig 转换为对应 AI 工具（Codex/Claude/Gemini）的命令行参数
+#
+# @author Atlas.oi
+# @date 2026-03-02
+
+[package]
+name = "ghostcode-router"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+regex = "1"
+tokio = { workspace = true }
+tokio-util = "0.7"
+tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }

@@ -90,6 +90,7 @@ async fn stub_ops_return_not_implemented() {
     let stub_ops: Vec<&&str> = KNOWN_OPS
         .iter()
         .filter(|op| {
+            // Phase 1 已实现的 op（11 个）
             **op != "ping"
                 && **op != "shutdown"
                 && **op != "actor_start"
@@ -101,10 +102,16 @@ async fn stub_ops_return_not_implemented() {
                 && **op != "inbox_list"
                 && **op != "inbox_mark_read"
                 && **op != "inbox_mark_all_read"
+                // Phase 2 路由 op（5 个，均已实现）
+                && **op != "route_task"
+                && **op != "route_task_parallel"
+                && **op != "route_status"
+                && **op != "route_cancel"
+                && **op != "session_list"
         })
         .collect();
 
-    assert_eq!(stub_ops.len(), 10, "应有 10 个占位 op (21 总 - 11 已实现)");
+    assert_eq!(stub_ops.len(), 10, "应有 10 个占位 op (26 总 - 16 已实现)");
 
     for op in stub_ops {
         let req = DaemonRequest::new(*op, serde_json::json!({}));
