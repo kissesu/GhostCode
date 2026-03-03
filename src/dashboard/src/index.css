@@ -1,0 +1,91 @@
+/**
+ * @file index.css
+ * @description 全局样式，Tailwind CSS 基础层 + 暗色主题 CSS 变量
+ * @author Atlas.oi
+ * @date 2026-03-03
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 暗色主题 CSS 自定义变量 */
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-card: #1a1a2e;
+  --bg-hover: #16213e;
+  --text-primary: #e0e0ff;
+  --text-secondary: #9090b0;
+  --text-muted: #505070;
+  --accent-blue: #4a9eff;
+  --accent-green: #4aff9e;
+  --accent-red: #ff4a4a;
+  --accent-yellow: #ffd04a;
+  --accent-purple: #b04aff;
+  --border-default: #2a2a4a;
+  --border-subtle: #1a1a3a;
+}
+
+/* 基础样式重置 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 自定义滚动条样式，与暗色主题匹配 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-card);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* 通用卡片样式 */
+.card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+}
+
+/* 状态指示点 */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot.active {
+  background-color: var(--accent-green);
+  box-shadow: 0 0 6px var(--accent-green);
+}
+
+.status-dot.stopped {
+  background-color: var(--text-muted);
+}
+
+.status-dot.unknown {
+  background-color: var(--accent-yellow);
+}
