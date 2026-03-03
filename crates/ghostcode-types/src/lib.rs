@@ -12,5 +12,8 @@ pub mod actor;
 pub mod group;
 pub mod addr;
 
+pub mod dashboard;
+pub mod skill;
+
 #[cfg(any(test, feature = "testutil"))]
 pub mod testutil;

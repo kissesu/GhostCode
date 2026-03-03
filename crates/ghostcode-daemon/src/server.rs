@@ -73,6 +73,10 @@ pub struct AppState {
     /// HUD 状态缓存（Phase 3）
     /// Hook 查询用的聚合状态快照
     pub hud_cache: Arc<HudStateStore>,
+    /// Skill Learning 存储（Phase 4）
+    /// C4 修复：以 group_id 为 key 隔离各 Group 的候选 Skill，防止数据泄露
+    /// key: group_id, value: 该 group 的 SkillStore
+    pub skill_store: std::sync::Mutex<HashMap<String, crate::skill_learning::SkillStore>>,
 }
 
 impl AppState {
@@ -92,6 +96,8 @@ impl AppState {
             routing: Arc::new(RoutingState::new()),
             verification: Arc::new(std::sync::Mutex::new(VerificationStateStore::new())),
             hud_cache: Arc::new(HudStateStore::new()),
+            // C4 修复：初始化为空 HashMap，按 group_id 动态创建 SkillStore
+            skill_store: std::sync::Mutex::new(HashMap::new()),
         }
     }
 

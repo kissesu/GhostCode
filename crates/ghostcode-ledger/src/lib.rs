@@ -10,6 +10,7 @@
 //! @date 2026-03-01
 
 pub mod blob;
+pub mod query;
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};

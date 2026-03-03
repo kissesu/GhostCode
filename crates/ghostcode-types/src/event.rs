@@ -49,6 +49,18 @@ pub enum EventKind {
     // === 系统 ===
     #[serde(rename = "system.notify")]
     SystemNotify,
+
+    // === Skill Learning ===
+    #[serde(rename = "skill.learned")]
+    SkillLearned,
+    #[serde(rename = "skill.promoted")]
+    SkillPromoted,
+    #[serde(rename = "skill.rejected")]
+    SkillRejected,
+
+    // === Dashboard ===
+    #[serde(rename = "dashboard.viewed")]
+    DashboardViewed,
 }
 
 /// 事件结构体
@@ -134,6 +146,10 @@ impl EventKind {
             EventKind::ChatRead,
             EventKind::ChatAck,
             EventKind::SystemNotify,
+            EventKind::SkillLearned,
+            EventKind::SkillPromoted,
+            EventKind::SkillRejected,
+            EventKind::DashboardViewed,
         ]
     }
 }

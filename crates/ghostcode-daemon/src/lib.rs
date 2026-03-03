@@ -21,3 +21,5 @@ pub mod messaging;
 pub mod routing;
 pub mod verification;
 pub mod hud;
+pub mod skill_learning;
+pub mod dashboard;

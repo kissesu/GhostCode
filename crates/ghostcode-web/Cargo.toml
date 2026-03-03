@@ -1,0 +1,45 @@
+[package]
+name = "ghostcode-web"
+version = "0.1.0"
+edition = "2021"
+description = "GhostCode Web Dashboard HTTP 服务器"
+authors = ["Atlas.oi"]
+
+[dependencies]
+# 异步运行时
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# HTTP 服务器
+axum = { version = "0.7", features = ["json"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+
+# 序列化
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 日志
+tracing = { workspace = true }
+
+# 错误处理
+anyhow = { workspace = true }
+
+# 时间处理
+chrono = { workspace = true }
+
+# Home 目录
+dirs = "5"
+
+# 异步流生成宏
+async-stream = "0.3"
+
+# 内部依赖
+ghostcode-types = { workspace = true }
+ghostcode-ledger = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { version = "0.4", features = ["util"] }
+axum = { version = "0.7", features = ["json"] }
+tokio-stream = { version = "0.1" }

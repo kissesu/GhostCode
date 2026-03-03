@@ -18,7 +18,7 @@ use crate::server::AppState;
 use crate::verification::VerifyEvent;
 use crate::{lifecycle, messaging::{send, inbox}, runner::HeadlessStatus};
 
-/// Phase 1 + Phase 2 + Phase 3 所有已知的 op 字符串（32 个）
+/// Phase 1 + Phase 2 + Phase 3 + Phase 4 所有已知的 op 字符串（40 个）
 pub const KNOWN_OPS: &[&str] = &[
     // 核心
     "ping",
@@ -58,6 +58,16 @@ pub const KNOWN_OPS: &[&str] = &[
     "verification_cancel",
     // HUD（Phase 3）
     "hud_snapshot",
+    // Dashboard（Phase 4）
+    "dashboard_snapshot",
+    "dashboard_timeline",
+    "dashboard_agents",
+    // Skill Learning（Phase 4）
+    "skill_extract",
+    "skill_list",
+    "skill_promote",
+    "skill_learn_fragment",
+    "team_skill_list",
 ];
 
 /// 分发请求到对应处理器
@@ -115,6 +125,19 @@ pub async fn dispatch(state: &AppState, req: DaemonRequest) -> DaemonResponse {
 
         // === HUD（Phase 3） ===
         "hud_snapshot" => handle_hud_snapshot(state, &req.args),
+
+        // === Dashboard（Phase 4）===
+        "dashboard_snapshot" => crate::dashboard::handle_dashboard_snapshot(state, &req.args).await,
+        "dashboard_timeline" => crate::dashboard::handle_dashboard_timeline(state, &req.args).await,
+        "dashboard_agents" => crate::dashboard::handle_dashboard_agents(state, &req.args).await,
+        // === Skill Learning（Phase 4）===
+        // W5 说明：skill_extract 依赖 LLM 抽取器，需独立 AI 调用链，暂保留 stub
+        "skill_extract" => stub(&req.op),
+        "skill_list" => handle_skill_list(state, &req.args),
+        "skill_promote" => handle_skill_promote(state, &req.args),
+        "skill_learn_fragment" => handle_skill_learn_fragment(state, &req.args),
+        // W5 说明：team_skill_list 依赖跨 group 数据聚合，属于高权限操作，暂保留 stub
+        "team_skill_list" => stub(&req.op),
 
         // === 未知 op ===
         _ => DaemonResponse::err("UNKNOWN_OP", format!("unknown operation: {}", req.op)),
@@ -854,6 +877,143 @@ fn handle_verification_cancel(state: &AppState, args: &serde_json::Value) -> Dae
             DaemonResponse::ok(serde_json::json!({ "cancelled": true }))
         }
         Err(e) => DaemonResponse::err("VERIFICATION_ERROR", e.to_string()),
+    }
+}
+
+// ============================================
+// Skill Learning Handler（Phase 4）
+// ============================================
+
+/// handle_skill_learn_fragment: 摄入会话片段，返回候选（若创建）
+///
+/// C4 修复：新增 group_id 必填参数，以 group_id 为 key 隔离存储
+///
+/// 必填参数：group_id, problem, solution
+/// 可选参数：confidence, context, suggested_triggers, suggested_tags
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_skill_learn_fragment(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // C4 修复：group_id 作为必填参数，实现 skill 数据按 group 隔离
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(&group_id, "group_id") { return resp; }
+
+    let problem = match args["problem"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 problem 字段"),
+    };
+    let solution = match args["solution"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 solution 字段"),
+    };
+    let confidence = args["confidence"].as_u64().unwrap_or(0) as u8;
+    let context = args["context"].as_str().unwrap_or("").to_string();
+    let suggested_triggers: Vec<String> = args["suggested_triggers"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let suggested_tags: Vec<String> = args["suggested_tags"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    use crate::skill_learning::{ingest_session_fragment, SessionFragment, SkillStore};
+    let fragment = SessionFragment {
+        problem,
+        solution,
+        confidence,
+        context,
+        suggested_triggers,
+        suggested_tags,
+    };
+    // C4 修复：通过 group_id 访问对应 group 的 SkillStore，不存在时自动创建
+    let mut store_map = state.skill_store.lock().unwrap_or_else(|e| e.into_inner());
+    let group_store = store_map.entry(group_id).or_insert_with(SkillStore::new);
+    let result = ingest_session_fragment(group_store, fragment);
+
+    DaemonResponse::ok(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))
+}
+
+/// handle_skill_list: 列出指定 Group 的所有候选
+///
+/// C4 修复：新增 group_id 必填参数，只返回对应 group 的候选
+///
+/// 必填参数：group_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_skill_list(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // C4 修复：group_id 作为必填参数，实现 skill 数据按 group 隔离
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(&group_id, "group_id") { return resp; }
+
+    use crate::skill_learning::list_skill_candidates;
+    let store_map = state.skill_store.lock().unwrap_or_else(|e| e.into_inner());
+    // group 不存在时返回空列表
+    let candidates = match store_map.get(&group_id) {
+        Some(group_store) => list_skill_candidates(group_store),
+        None => vec![],
+    };
+    DaemonResponse::ok(serde_json::to_value(candidates).unwrap_or(serde_json::Value::Null))
+}
+
+/// handle_skill_promote: 将候选提升为正式 Skill
+///
+/// C4 修复：新增 group_id 必填参数，只操作对应 group 的候选
+/// W6 修复：promote 成功后添加 TODO 注释说明需要后续写账本事件
+///
+/// 必填参数：group_id, candidate_id, skill_id
+/// 可选参数：skill_name（默认使用 skill_id）
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_skill_promote(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // C4 修复：group_id 作为必填参数，实现 skill 数据按 group 隔离
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(&group_id, "group_id") { return resp; }
+
+    let candidate_id = match args["candidate_id"].as_str() {
+        Some(s) => s.to_string(),
+        None => return DaemonResponse::err("INVALID_ARGS", "缺少 candidate_id"),
+    };
+    let skill_id = match args["skill_id"].as_str() {
+        Some(s) => s.to_string(),
+        None => return DaemonResponse::err("INVALID_ARGS", "缺少 skill_id"),
+    };
+    let skill_name = args["skill_name"]
+        .as_str()
+        .unwrap_or(&skill_id)
+        .to_string();
+
+    use crate::skill_learning::{promote_skill, SkillStore};
+    let mut store_map = state.skill_store.lock().unwrap_or_else(|e| e.into_inner());
+    // group 不存在时返回 NOT_FOUND（promote 要求候选已存在）
+    let group_store = store_map.entry(group_id).or_insert_with(SkillStore::new);
+    match promote_skill(group_store, &candidate_id, &skill_id, &skill_name) {
+        Ok(skill) => {
+            // W6 TODO：skill_promote 成功后应将 SkillPromoted 事件追加到账本
+            // 当前 AppState 未直接暴露 ledger 写入接口，需要后续集成
+            // 参考实现：通过 groups_dir + group_id 构造账本路径后调用 ghostcode-ledger::append
+            DaemonResponse::ok(serde_json::to_value(skill).unwrap_or(serde_json::Value::Null))
+        }
+        Err(msg) => DaemonResponse::err("NOT_FOUND", msg),
     }
 }
 

@@ -1,7 +1,7 @@
 //! ghostcode-daemon 请求分发测试
 //!
 //! 覆盖 T07 TDD 规范定义的所有测试用例
-//! - 21 个已知 op 完备性
+//! - 38 个已知 op 完备性（Phase 1-4）
 //! - 未知 op 安全性（PBT）
 //! - ping 响应格式 [ERR-3]
 //!
@@ -23,7 +23,7 @@ use proptest::prelude::*;
 async fn dispatch_all_known_ops() {
     let state = AppState::default();
 
-    // 遍历 21 个 op → 全部不返回 "UNKNOWN_OP"
+    // 遍历 38 个 op（Phase 1-4）→ 全部不返回 "UNKNOWN_OP"
     for op in KNOWN_OPS {
         let req = DaemonRequest::new(*op, serde_json::json!({}));
         let resp = dispatch(&state, req).await;
@@ -85,18 +85,28 @@ async fn stub_ops_return_not_implemented() {
     let state = AppState::default();
 
     // 除了已实现的 handler，其余 op 应返回 NOT_IMPLEMENTED
-    // 已实现: ping, shutdown, actor_start, actor_stop, headless_status, headless_set_status,
-    //         send, reply (T11), inbox_list, inbox_mark_read, inbox_mark_all_read (T12)
+    // 已实现（26 个）:
+    //   Phase 1: ping, shutdown, actor_start, actor_stop, headless_status, headless_set_status (6 个)
+    //   T11/T12: send, reply, inbox_list, inbox_mark_read, inbox_mark_all_read (5 个)
+    //   Phase 2: route_task, route_task_parallel, route_status, route_cancel, session_list (5 个)
+    //   Phase 3: verification_start, verification_status, verification_cancel, hud_snapshot (4 个)
+    //   Phase 4 Dashboard: dashboard_snapshot, dashboard_timeline, dashboard_agents (3 个)
+    //   Phase 4 Skill: skill_list, skill_promote, skill_learn_fragment (3 个)
+    // stub（12 个）:
+    //   Group: group_create, group_show, group_start, group_stop, group_delete, group_set_state, groups (7 个)
+    //   Actor: actor_add, actor_list, actor_remove (3 个)
+    //   Skill: skill_extract, team_skill_list (2 个)
     let stub_ops: Vec<&&str> = KNOWN_OPS
         .iter()
         .filter(|op| {
-            // Phase 1 已实现的 op（11 个）
+            // Phase 1 已实现的 op（6 个）
             **op != "ping"
                 && **op != "shutdown"
                 && **op != "actor_start"
                 && **op != "actor_stop"
                 && **op != "headless_status"
                 && **op != "headless_set_status"
+                // 消息 op（5 个，T11/T12 已实现）
                 && **op != "send"
                 && **op != "reply"
                 && **op != "inbox_list"
@@ -108,17 +118,23 @@ async fn stub_ops_return_not_implemented() {
                 && **op != "route_status"
                 && **op != "route_cancel"
                 && **op != "session_list"
-                // Phase 3 脚手架 op（6 个，均已实现返回空结果）
+                // Phase 3 验证 + HUD op（4 个，均已实现）
                 && **op != "verification_start"
                 && **op != "verification_status"
                 && **op != "verification_cancel"
                 && **op != "hud_snapshot"
-                && **op != "cost_record"
-                && **op != "cost_summary"
+                // Phase 4 Dashboard op（3 个，均已实现）
+                && **op != "dashboard_snapshot"
+                && **op != "dashboard_timeline"
+                && **op != "dashboard_agents"
+                // Phase 4 Skill Learning op（3 个，已实现）
+                && **op != "skill_list"
+                && **op != "skill_promote"
+                && **op != "skill_learn_fragment"
         })
         .collect();
 
-    assert_eq!(stub_ops.len(), 10, "应有 10 个占位 op (32 总 - 22 已实现)");
+    assert_eq!(stub_ops.len(), 12, "应有 12 个占位 op (38 总 - 26 已实现)");
 
     for op in stub_ops {
         let req = DaemonRequest::new(*op, serde_json::json!({}));
