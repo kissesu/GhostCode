@@ -1,13 +1,12 @@
 // @file hud_snapshot_test.rs
 // @description HUD 快照聚合契约测试
 //              测试 build_hud_snapshot 的各种场景：
-//              空状态、有验证、有成本、同时有验证和成本、上下文压力级别
+//              空状态、有验证、上下文压力级别
 // @author Atlas.oi
 // @date 2026-03-03
 
 use ghostcode_daemon::hud::{build_hud_snapshot, compute_context_level};
 use ghostcode_daemon::server::AppState;
-use ghostcode_daemon::cost::{CostSource, UsageRecord};
 
 // ============================================
 // 辅助函数
@@ -31,12 +30,6 @@ fn hud_snapshot_empty_state() {
 
     // 验证摘要为空（未指定 group_id + run_id）
     assert!(snapshot.verification.is_none(), "空状态下 verification 应为 None");
-
-    // 成本全为零
-    assert_eq!(snapshot.cost.total_cost_micro, 0, "空状态下 total_cost_micro 应为 0");
-    assert_eq!(snapshot.cost.total_prompt_tokens, 0, "空状态下 total_prompt_tokens 应为 0");
-    assert_eq!(snapshot.cost.total_completion_tokens, 0, "空状态下 total_completion_tokens 应为 0");
-    assert_eq!(snapshot.cost.request_count, 0, "空状态下 request_count 应为 0");
 
     // 上下文压力：未传入时默认为 0/0，百分比为 0，级别 green
     assert_eq!(snapshot.context_pressure.used_tokens, 0);
@@ -80,86 +73,6 @@ fn hud_snapshot_with_verification() {
     // 初始状态 7 项均为 Pending，checks_passed = 0，checks_total = 7
     assert_eq!(verification.checks_passed, 0);
     assert_eq!(verification.checks_total, 7);
-}
-
-// ============================================
-// 测试：有成本记录时返回成本汇总
-// ============================================
-
-// 记录成本后，快照中的成本字段应反映累计数据
-#[test]
-fn hud_snapshot_with_cost() {
-    let state = make_state();
-
-    // 记录一条使用记录
-    {
-        let mut store = state.costs.lock().unwrap();
-        store.record_usage(UsageRecord {
-            group_id: "group1".to_string(),
-            task_id: "task1".to_string(),
-            model: "claude-sonnet".to_string(),
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            source: CostSource::VendorReported,
-        });
-    }
-
-    let args = serde_json::json!({
-        "group_id": "group1",
-    });
-    let snapshot = build_hud_snapshot(&state, &args);
-
-    // 成本字段应有值
-    assert_eq!(snapshot.cost.request_count, 1, "request_count 应为 1");
-    assert_eq!(snapshot.cost.total_prompt_tokens, 100, "total_prompt_tokens 应为 100");
-    assert_eq!(snapshot.cost.total_completion_tokens, 50, "total_completion_tokens 应为 50");
-    // claude-sonnet: prompt=3_000, completion=15_000 micro-cents/token
-    // cost = 100 * 3_000 + 50 * 15_000 = 300_000 + 750_000 = 1_050_000
-    assert_eq!(snapshot.cost.total_cost_micro, 1_050_000);
-}
-
-// ============================================
-// 测试：同时有验证和成本时正确聚合
-// ============================================
-
-// 同时存在验证运行和成本记录时，两个字段均应正确填充
-#[test]
-fn hud_snapshot_with_both() {
-    let state = make_state();
-
-    // 创建验证运行
-    {
-        let mut store = state.verification.lock().unwrap();
-        store.start_run("group2".to_string(), "run2".to_string())
-            .expect("start_run 应成功");
-    }
-
-    // 记录成本
-    {
-        let mut store = state.costs.lock().unwrap();
-        store.record_usage(UsageRecord {
-            group_id: "group2".to_string(),
-            task_id: "task2".to_string(),
-            model: "claude-opus".to_string(),
-            prompt_tokens: 200,
-            completion_tokens: 100,
-            source: CostSource::Exact,
-        });
-    }
-
-    let args = serde_json::json!({
-        "group_id": "group2",
-        "run_id": "run2",
-    });
-    let snapshot = build_hud_snapshot(&state, &args);
-
-    // 验证摘要存在
-    let verification = snapshot.verification.expect("verification 不应为 None");
-    assert_eq!(verification.status, "Running");
-
-    // 成本字段有值
-    assert_eq!(snapshot.cost.request_count, 1);
-    assert_eq!(snapshot.cost.total_prompt_tokens, 200);
 }
 
 // ============================================
@@ -233,7 +146,6 @@ async fn hud_snapshot_via_dispatch() {
 
     // 响应数据应包含必需字段（在 result 字段中）
     let data = &resp.result;
-    assert!(data.get("cost").is_some(), "响应中应有 cost 字段");
     assert!(data.get("context_pressure").is_some(), "响应中应有 context_pressure 字段");
     assert!(data.get("active_agents").is_some(), "响应中应有 active_agents 字段");
 }

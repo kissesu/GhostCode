@@ -2,9 +2,9 @@
 //!
 //! 管理 HUD（头显状态栏）的缓存数据，提供快照聚合功能：
 //! - 从 verification 状态机获取验证摘要
-//! - 从 CostStore 获取成本汇总
 //! - 根据 used_tokens/max_tokens 计算上下文压力级别
 //! - 统计活跃 Agent 数量
+//! - 供 Hook 注入 Claude 上下文使用
 //!
 //! 参考: oh-my-claudecode 的 HUD 状态栏概念
 //!
@@ -41,33 +41,6 @@ pub struct VerificationSummary {
     pub checks_total: u32,
 }
 
-/// 成本汇总视图
-///
-/// 从 CostStore 聚合的成本快照，用于 HUD 展示
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CostSummaryView {
-    /// 总成本（micro-cents）
-    pub total_cost_micro: u64,
-    /// 总输入 token 数
-    pub total_prompt_tokens: u64,
-    /// 总输出 token 数
-    pub total_completion_tokens: u64,
-    /// 请求总次数
-    pub request_count: u64,
-}
-
-impl CostSummaryView {
-    /// 创建零值视图
-    pub fn zero() -> Self {
-        Self {
-            total_cost_micro: 0,
-            total_prompt_tokens: 0,
-            total_completion_tokens: 0,
-            request_count: 0,
-        }
-    }
-}
-
 /// 上下文压力视图
 ///
 /// 描述当前 Agent 上下文使用情况，用于 HUD 展示
@@ -85,14 +58,12 @@ pub struct ContextPressure {
 
 /// HUD 快照
 ///
-/// 聚合了验证状态、成本、上下文压力和活跃 Agent 的完整视图
-/// 由 build_hud_snapshot 函数同步构建，供 hud_snapshot handler 返回
+/// 聚合了验证状态、上下文压力和活跃 Agent 的完整视图
+/// 由 build_hud_snapshot 函数同步构建，供 Hook 注入 Claude 上下文使用
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HudSnapshot {
     /// 验证状态摘要（仅在 args 中提供 group_id + run_id 时填充）
     pub verification: Option<VerificationSummary>,
-    /// 成本汇总
-    pub cost: CostSummaryView,
     /// 上下文压力
     pub context_pressure: ContextPressure,
     /// 活跃 Agent 数量（从 sessions 中统计）
@@ -144,9 +115,8 @@ fn status_to_str(status: &RunStatus) -> &'static str {
 ///
 /// 业务逻辑：
 /// 1. 从 args 中读取可选的 group_id + run_id，查询验证状态摘要
-/// 2. 从 args 中读取可选的 group_id，聚合成本快照（无 group_id 则全局聚合）
-/// 3. 从 args 中读取 used_tokens / max_tokens 计算上下文压力
-/// 4. 通过 sessions 的 try_read 统计活跃 Agent 数量
+/// 2. 从 args 中读取 used_tokens / max_tokens 计算上下文压力
+/// 3. 通过 sessions 的 try_read 统计活跃 Agent 数量
 ///
 /// 注意：此函数是同步函数（fn），不调用任何 async 方法
 ///
@@ -188,23 +158,7 @@ pub fn build_hud_snapshot(state: &AppState, args: &serde_json::Value) -> HudSnap
     };
 
     // ============================================
-    // 第二步：构建成本汇总视图
-    // 使用 args 中的可选 group_id 进行过滤聚合
-    // ============================================
-    let cost = {
-        let group_id = args["group_id"].as_str();
-        let store = state.costs.lock().unwrap_or_else(|e| e.into_inner());
-        let snapshot = store.get_summary(group_id, None);
-        CostSummaryView {
-            total_cost_micro: snapshot.total_cost_micro,
-            total_prompt_tokens: snapshot.total_prompt_tokens,
-            total_completion_tokens: snapshot.total_completion_tokens,
-            request_count: snapshot.request_count,
-        }
-    };
-
-    // ============================================
-    // 第三步：计算上下文压力
+    // 第二步：计算上下文压力
     // 从 args 中读取 used_tokens 和 max_tokens
     // ============================================
     let used_tokens = args["used_tokens"].as_u64().unwrap_or(0);
@@ -237,7 +191,6 @@ pub fn build_hud_snapshot(state: &AppState, args: &serde_json::Value) -> HudSnap
 
     HudSnapshot {
         verification,
-        cost,
         context_pressure,
         active_agents,
     }

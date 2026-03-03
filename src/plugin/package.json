@@ -11,10 +11,7 @@
       "types": "./dist/index.d.ts"
     }
   },
-  "bin": {
-    "ghostcode-hud": "./dist/statusline.js"
-  },
-  "files": [
+"files": [
     "dist",
     ".claude"
   ],

@@ -14,7 +14,6 @@ use ghostcode_router::task_format::parse_task_format;
 use ghostcode_types::ipc::{DaemonRequest, DaemonResponse};
 use uuid::Uuid;
 
-use crate::cost::{CostSource, UsageRecord};
 use crate::server::AppState;
 use crate::verification::VerifyEvent;
 use crate::{lifecycle, messaging::{send, inbox}, runner::HeadlessStatus};
@@ -59,9 +58,6 @@ pub const KNOWN_OPS: &[&str] = &[
     "verification_cancel",
     // HUD（Phase 3）
     "hud_snapshot",
-    // 成本（Phase 3）
-    "cost_record",
-    "cost_summary",
 ];
 
 /// 分发请求到对应处理器
@@ -119,10 +115,6 @@ pub async fn dispatch(state: &AppState, req: DaemonRequest) -> DaemonResponse {
 
         // === HUD（Phase 3） ===
         "hud_snapshot" => handle_hud_snapshot(state, &req.args),
-
-        // === 成本（Phase 3） ===
-        "cost_record" => handle_cost_record(state, &req.args),
-        "cost_summary" => handle_cost_summary(state, &req.args),
 
         // === 未知 op ===
         _ => DaemonResponse::err("UNKNOWN_OP", format!("unknown operation: {}", req.op)),
@@ -887,147 +879,3 @@ fn handle_hud_snapshot(state: &AppState, args: &serde_json::Value) -> DaemonResp
 }
 
 // ============================================
-// 成本 Handler（Phase 3 脚手架）
-// ============================================
-
-/// cost_record handler
-///
-/// 记录一次 API 调用的成本数据
-///
-/// 业务逻辑：
-/// 1. 提取必填参数（group_id, model），缺失返回 INVALID_ARGS
-/// 2. 提取可选参数（task_id, prompt_tokens, completion_tokens, source）
-/// 3. 验证 group_id 格式
-/// 4. 构造 UsageRecord，通过 Mutex 锁调用 CostStore::record_usage
-/// 5. 返回 { recorded: true }
-///
-/// 必填参数：group_id, model
-/// 可选参数：task_id（默认 "default"）, prompt_tokens（默认 0）, completion_tokens（默认 0）, source（默认 vendor_reported）
-///
-/// @param state - 共享应用状态
-/// @param args - 请求参数
-fn handle_cost_record(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
-    // 提取必填参数
-    let group_id = match args["group_id"].as_str() {
-        Some(v) => v,
-        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: group_id"),
-    };
-    let task_id = args["task_id"].as_str().unwrap_or("default");
-    let model = match args["model"].as_str() {
-        Some(v) => v,
-        None => return DaemonResponse::err("INVALID_ARGS", "missing required field: model"),
-    };
-    let prompt_tokens_raw = args["prompt_tokens"].as_u64().unwrap_or(0);
-    let completion_tokens_raw = args["completion_tokens"].as_u64().unwrap_or(0);
-
-    // 范围校验：token 计数不能超过 u32::MAX，防止静默截断
-    if prompt_tokens_raw > u32::MAX as u64 {
-        return DaemonResponse::err(
-            "INVALID_ARGS",
-            format!("prompt_tokens 超出 u32 范围: {}", prompt_tokens_raw),
-        );
-    }
-    if completion_tokens_raw > u32::MAX as u64 {
-        return DaemonResponse::err(
-            "INVALID_ARGS",
-            format!("completion_tokens 超出 u32 范围: {}", completion_tokens_raw),
-        );
-    }
-    let prompt_tokens = prompt_tokens_raw as u32;
-    let completion_tokens = completion_tokens_raw as u32;
-
-    // 解析 source，默认为 VendorReported
-    // 严格枚举校验：拒绝未知 source 值，防止拼写错误污染精度标注
-    let source = match args["source"].as_str() {
-        Some("exact") => CostSource::Exact,
-        Some("estimated") => CostSource::Estimated,
-        Some("vendor_reported") | None => CostSource::VendorReported,
-        Some(unknown) => {
-            return DaemonResponse::err(
-                "INVALID_ARGS",
-                format!(
-                    "unknown source: \"{}\", expected: exact/vendor_reported/estimated",
-                    unknown
-                ),
-            )
-        }
-    };
-
-    // 验证 group_id 格式（防路径遍历）
-    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
-
-    let usage = UsageRecord {
-        group_id: group_id.to_string(),
-        task_id: task_id.to_string(),
-        model: model.to_string(),
-        prompt_tokens,
-        completion_tokens,
-        source,
-    };
-
-    // 通过 Mutex 锁写入，释放锁后返回结果
-    let mut store = state.costs.lock().unwrap_or_else(|e| e.into_inner());
-    store.record_usage(usage);
-    drop(store);
-
-    DaemonResponse::ok(serde_json::json!({ "recorded": true }))
-}
-
-/// cost_summary handler
-///
-/// 获取成本统计汇总数据
-///
-/// 业务逻辑：
-/// 1. 提取可选参数（group_id, task_id），均为可选
-/// 2. 加锁读取 CostStore，调用 get_summary 获取过滤聚合
-/// 3. 若指定 group_id，同时调用 get_summary_by_model 返回按模型聚合
-/// 4. 返回聚合快照 + 可选的 by_model 字段
-///
-/// 可选参数：group_id（不传则全局聚合），task_id（不传则不过滤 task）
-///
-/// @param state - 共享应用状态
-/// @param args - 请求参数
-fn handle_cost_summary(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
-    let group_id = args["group_id"].as_str();
-    let task_id = args["task_id"].as_str();
-
-    let store = state.costs.lock().unwrap_or_else(|e| e.into_inner());
-    let summary = store.get_summary(group_id, task_id);
-
-    // 若指定了 group_id，同时返回按模型聚合数据
-    let by_model = if let Some(gid) = group_id {
-        let model_map = store.get_summary_by_model(gid, task_id);
-        let model_summaries: serde_json::Value = model_map
-            .iter()
-            .map(|(model, snap)| {
-                (
-                    model.clone(),
-                    serde_json::json!({
-                        "total_prompt_tokens": snap.total_prompt_tokens,
-                        "total_completion_tokens": snap.total_completion_tokens,
-                        "total_cost_micro": snap.total_cost_micro,
-                        "request_count": snap.request_count,
-                    }),
-                )
-            })
-            .collect::<serde_json::Map<String, serde_json::Value>>()
-            .into();
-        Some(model_summaries)
-    } else {
-        None
-    };
-    drop(store);
-
-    let mut result = serde_json::json!({
-        "total_prompt_tokens": summary.total_prompt_tokens,
-        "total_completion_tokens": summary.total_completion_tokens,
-        "total_cost_micro": summary.total_cost_micro,
-        "request_count": summary.request_count,
-    });
-
-    if let Some(by_model_val) = by_model {
-        result["by_model"] = by_model_val;
-    }
-
-    DaemonResponse::ok(result)
-}

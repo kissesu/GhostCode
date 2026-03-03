@@ -20,7 +20,6 @@ use tokio::sync::{broadcast, Notify, RwLock};
 use ghostcode_types::event::Event;
 use ghostcode_types::ipc::{DaemonRequest, DaemonResponse};
 
-use crate::cost::CostStore;
 use crate::hud::HudStateStore;
 use crate::messaging::delivery::DeliveryEngine;
 use crate::protocol::{self, ProtocolError};
@@ -51,8 +50,7 @@ pub struct DaemonConfig {
 /// - event_tx: 事件广播通道，用于内部事件发布/订阅
 /// - routing: 路由状态管理器（Phase 2 新增，管理路由任务状态 + 代码主权守卫）
 /// - verification: 验证状态存储（Phase 3 新增，Ralph 验证循环状态）
-/// - costs: 成本记录存储（Phase 3 新增，API 调用成本统计）
-/// - hud_cache: HUD 状态缓存（Phase 3 新增，头显状态栏聚合数据）
+/// - hud_cache: HUD 状态缓存（Phase 3 新增，聚合状态快照供 Hook 查询）
 pub struct AppState {
     /// 关闭信号
     shutdown: Notify,
@@ -72,12 +70,8 @@ pub struct AppState {
     /// Ralph 验证循环的状态数据
     /// 使用 Mutex 包装以支持 start_run/apply_event 的 &mut self 调用
     pub verification: Arc<std::sync::Mutex<VerificationStateStore>>,
-    /// 成本记录存储（Phase 3）
-    /// 各 Agent 的 API 调用成本统计
-    /// 使用 Mutex 包装，因为 record_usage 需要 &mut self
-    pub costs: Arc<std::sync::Mutex<CostStore>>,
     /// HUD 状态缓存（Phase 3）
-    /// 头显状态栏所需的聚合状态快照
+    /// Hook 查询用的聚合状态快照
     pub hud_cache: Arc<HudStateStore>,
 }
 
@@ -97,7 +91,6 @@ impl AppState {
             delivery,
             routing: Arc::new(RoutingState::new()),
             verification: Arc::new(std::sync::Mutex::new(VerificationStateStore::new())),
-            costs: Arc::new(std::sync::Mutex::new(CostStore::new())),
             hud_cache: Arc::new(HudStateStore::new()),
         }
     }

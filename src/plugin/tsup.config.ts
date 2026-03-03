@@ -8,8 +8,8 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  // 构建入口：Plugin 主入口 + HUD statusline CLI 入口
-  entry: ["src/index.ts", "src/hud/statusline.ts"],
+  // 构建入口：Plugin 主入口
+  entry: ["src/index.ts"],
 
   // 输出格式：仅 ESM，不输出 CJS
   format: ["esm"],
