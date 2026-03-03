@@ -26,3 +26,13 @@ Thumbs.db
 *.o
 *.so
 *.dylib
+
+# 文档目录
+docs/
+
+# AI 相关文件及目录
+.claude/
+openspec/
+.openspec/
+.serena/
+CLAUDE.md
