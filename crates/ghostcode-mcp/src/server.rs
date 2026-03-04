@@ -423,7 +423,7 @@ mod tests {
         let resp = resp.expect("tools/list 必须返回响应");
         let result = resp.result.expect("tools/list 必须有 result");
         let tools = result["tools"].as_array().expect("tools 必须是数组");
-        assert_eq!(tools.len(), 11, "工具数量必须恰好为 11");
+        assert_eq!(tools.len(), 16, "工具数量必须恰好为 16");
     }
 
     // --------------------------------------------------------

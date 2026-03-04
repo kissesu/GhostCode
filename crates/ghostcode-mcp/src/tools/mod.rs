@@ -3,11 +3,17 @@
 //! 定义所有 MCP 工具的公共类型（ToolContext / ToolError）和分发函数（dispatch_tool）
 //! 每个工具实现在独立子模块中，遵循统一的 schema() + execute() 接口
 //!
+//! 注册表模式：通过 registry() 获取全部工具描述符，通过 find_tool() 按名查找
+//! 取代原有的线性 match 分发，使新增工具只需修改注册表数组即可
+//!
 //! 参考: cccc/src/cccc/ports/mcp/handlers/ - 工具处理函数组织方式
 //!
 //! @author Atlas.oi
-//! @date 2026-03-01
+//! @date 2026-03-04
 
+// ============================================================
+// 原有 11 个工具模块
+// ============================================================
 pub mod actor_list;
 pub mod actor_start;
 pub mod actor_stop;
@@ -20,7 +26,18 @@ pub mod route_cancel;
 pub mod route_status;
 pub mod route_task;
 
+// ============================================================
+// 新增 5 个工具模块
+// ============================================================
+pub mod dashboard_snapshot;
+pub mod group_list;
+pub mod skill_list;
+pub mod team_skill_list;
+pub mod verification_status;
+
 use anyhow::Result;
+use std::future::Future;
+use std::pin::Pin;
 
 // ============================================================
 // 工具上下文
@@ -109,7 +126,160 @@ impl ToolError {
 }
 
 // ============================================================
-// 工具 Schema 列表（用于 tools/list 响应）
+// 工具描述符 — 注册表核心类型
+// ============================================================
+
+/// 工具异步执行函数的返回类型别名
+///
+/// 避免在 ToolDescriptor 中出现过于复杂的内联类型
+pub type ToolFuture = Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send>>;
+
+/// MCP 工具描述符
+///
+/// 每个工具通过实现此结构体注册到全局注册表
+/// 注册表替代原有的线性 match，新增工具只需在 REGISTRY 数组中追加条目
+pub struct ToolDescriptor {
+    /// 工具唯一名称，与 MCP tools/call 的 name 字段对应
+    pub name: &'static str,
+    /// 工具描述（仅供注册表元信息使用，详细 schema 由 schema 函数提供）
+    pub description: &'static str,
+    /// 返回工具的 JSON Schema（用于 tools/list 响应）
+    pub schema: fn() -> serde_json::Value,
+    /// 异步执行工具调用，返回结果或错误
+    pub execute: fn(args: serde_json::Value, ctx: ToolContext) -> ToolFuture,
+}
+
+// ============================================================
+// 全局工具注册表
+// 新增工具只需在此数组末尾追加 ToolDescriptor 条目
+// ============================================================
+
+/// 所有 MCP 工具的静态注册表
+static REGISTRY: &[ToolDescriptor] = &[
+    // --------------------------------------------------------
+    // 原有 11 个工具
+    // --------------------------------------------------------
+    ToolDescriptor {
+        name: "ghostcode_message_send",
+        description: "Send a message to another actor.",
+        schema: message_send::schema,
+        execute: |args, ctx| Box::pin(message_send::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_inbox_list",
+        description: "List messages in the inbox.",
+        schema: inbox_list::schema,
+        execute: |args, ctx| Box::pin(inbox_list::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_inbox_mark_read",
+        description: "Mark a message as read.",
+        schema: inbox_mark_read::schema,
+        execute: |args, ctx| Box::pin(inbox_mark_read::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_inbox_mark_all_read",
+        description: "Mark all messages as read.",
+        schema: inbox_mark_all_read::schema,
+        execute: |args, ctx| Box::pin(inbox_mark_all_read::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_actor_list",
+        description: "List all actors in the current group.",
+        schema: actor_list::schema,
+        execute: |args, ctx| Box::pin(actor_list::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_actor_start",
+        description: "Start an actor.",
+        schema: actor_start::schema,
+        execute: |args, ctx| Box::pin(actor_start::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_actor_stop",
+        description: "Stop an actor.",
+        schema: actor_stop::schema,
+        execute: |args, ctx| Box::pin(actor_stop::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_group_info",
+        description: "Get information about the current group.",
+        schema: group_info::schema,
+        execute: |args, ctx| Box::pin(group_info::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_route_task",
+        description: "Route a task to an actor.",
+        schema: route_task::schema,
+        execute: |args, ctx| Box::pin(route_task::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_route_status",
+        description: "Get the status of a routed task.",
+        schema: route_status::schema,
+        execute: |args, ctx| Box::pin(route_status::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_route_cancel",
+        description: "Cancel a routed task.",
+        schema: route_cancel::schema,
+        execute: |args, ctx| Box::pin(route_cancel::execute_owned(args, ctx)),
+    },
+    // --------------------------------------------------------
+    // 新增 5 个工具
+    // --------------------------------------------------------
+    ToolDescriptor {
+        name: "ghostcode_group_list",
+        description: "List all available working groups.",
+        schema: group_list::schema,
+        execute: |args, ctx| Box::pin(group_list::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_dashboard_snapshot",
+        description: "Get a dashboard snapshot of the current group.",
+        schema: dashboard_snapshot::schema,
+        execute: |args, ctx| Box::pin(dashboard_snapshot::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_verification_status",
+        description: "Get the verification status of the current group.",
+        schema: verification_status::schema,
+        execute: |args, ctx| Box::pin(verification_status::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_skill_list",
+        description: "List available skills in the current group.",
+        schema: skill_list::schema,
+        execute: |args, ctx| Box::pin(skill_list::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_team_skill_list",
+        description: "List skills aggregated across all groups.",
+        schema: team_skill_list::schema,
+        execute: |args, ctx| Box::pin(team_skill_list::execute_owned(args, ctx)),
+    },
+];
+
+// ============================================================
+// 注册表公共 API
+// ============================================================
+
+/// 获取全部工具注册表
+///
+/// 由 server.rs 的 tools/list 处理器调用，返回所有工具描述符
+pub fn registry() -> &'static [ToolDescriptor] {
+    REGISTRY
+}
+
+/// 按名称查找工具描述符
+///
+/// 返回 None 表示工具不存在，调用方应返回 invalid_param 错误
+pub fn find_tool(name: &str) -> Option<&'static ToolDescriptor> {
+    REGISTRY.iter().find(|d| d.name == name)
+}
+
+// ============================================================
+// 工具 Schema 列表（兼容旧 API，用于 tools/list 响应）
 // ============================================================
 
 /// 返回所有工具的 schema 定义列表
@@ -117,19 +287,7 @@ impl ToolError {
 /// 由 server.rs 的 tools/list 处理器调用
 /// 参考: cccc/src/cccc/ports/mcp/toolspecs.py - MCP_TOOLS 结构
 pub fn all_tool_schemas() -> Vec<serde_json::Value> {
-    vec![
-        message_send::schema(),
-        inbox_list::schema(),
-        inbox_mark_read::schema(),
-        inbox_mark_all_read::schema(),
-        actor_list::schema(),
-        actor_start::schema(),
-        actor_stop::schema(),
-        group_info::schema(),
-        route_task::schema(),
-        route_status::schema(),
-        route_cancel::schema(),
-    ]
+    REGISTRY.iter().map(|d| (d.schema)()).collect()
 }
 
 // ============================================================
@@ -140,27 +298,17 @@ pub fn all_tool_schemas() -> Vec<serde_json::Value> {
 /// 根据工具名分发工具调用
 ///
 /// 业务逻辑：
-/// 1. 匹配 tool_name 到对应工具模块
-/// 2. 调用该模块的 execute(args, ctx)
+/// 1. 通过 find_tool 在注册表中查找工具描述符
+/// 2. 调用该描述符的 execute 函数
 /// 3. 返回工具结果或错误
 pub async fn dispatch_tool(
     tool_name: &str,
     args: &serde_json::Value,
     ctx: &ToolContext,
 ) -> Result<serde_json::Value, ToolError> {
-    match tool_name {
-        "ghostcode_message_send"       => message_send::execute(args, ctx).await,
-        "ghostcode_inbox_list"         => inbox_list::execute(args, ctx).await,
-        "ghostcode_inbox_mark_read"    => inbox_mark_read::execute(args, ctx).await,
-        "ghostcode_inbox_mark_all_read" => inbox_mark_all_read::execute(args, ctx).await,
-        "ghostcode_actor_list"         => actor_list::execute(args, ctx).await,
-        "ghostcode_actor_start"        => actor_start::execute(args, ctx).await,
-        "ghostcode_actor_stop"         => actor_stop::execute(args, ctx).await,
-        "ghostcode_group_info"         => group_info::execute(args, ctx).await,
-        "ghostcode_route_task"         => route_task::execute(args, ctx).await,
-        "ghostcode_route_status"       => route_status::execute(args, ctx).await,
-        "ghostcode_route_cancel"       => route_cancel::execute(args, ctx).await,
-        _ => Err(ToolError::InvalidParam {
+    match find_tool(tool_name) {
+        Some(descriptor) => (descriptor.execute)(args.clone(), ctx.clone()).await,
+        None => Err(ToolError::InvalidParam {
             name: "tool_name".to_string(),
             reason: format!("unknown tool: {}", tool_name),
         }),
@@ -183,12 +331,12 @@ mod tests {
     }
 
     // --------------------------------------------------------
-    // 测试 1: all_tool_schemas 返回恰好 8 个工具定义
+    // 测试 1: all_tool_schemas 返回 16 个工具定义
     // --------------------------------------------------------
     #[test]
     fn all_schemas_returns_11_tools() {
         let schemas = all_tool_schemas();
-        assert_eq!(schemas.len(), 11, "必须恰好返回 11 个工具定义");
+        assert_eq!(schemas.len(), 16, "必须恰好返回 16 个工具定义");
 
         // 验证每个 schema 都包含 name / description / inputSchema 字段
         for schema in &schemas {
@@ -306,35 +454,22 @@ mod tests {
     }
 
     // --------------------------------------------------------
-    // 测试 10: 验证工具名称列表与 dispatch_tool 路由一致
+    // 测试 10: 验证工具名称列表与注册表一致
     // --------------------------------------------------------
     #[test]
     fn all_schema_names_match_dispatch_routes() {
         let schemas = all_tool_schemas();
-        let expected_names = [
-            "ghostcode_message_send",
-            "ghostcode_inbox_list",
-            "ghostcode_inbox_mark_read",
-            "ghostcode_inbox_mark_all_read",
-            "ghostcode_actor_list",
-            "ghostcode_actor_start",
-            "ghostcode_actor_stop",
-            "ghostcode_group_info",
-            "ghostcode_route_task",
-            "ghostcode_route_status",
-            "ghostcode_route_cancel",
-        ];
-
         let actual_names: Vec<&str> = schemas
             .iter()
             .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
             .collect();
 
-        for expected in &expected_names {
+        // 每个注册表条目都能在 all_tool_schemas() 中找到
+        for descriptor in registry() {
             assert!(
-                actual_names.contains(expected),
+                actual_names.contains(&descriptor.name),
                 "工具 '{}' 必须出现在 all_tool_schemas() 中",
-                expected
+                descriptor.name
             );
         }
     }

@@ -1,21 +1,20 @@
-//! ghostcode_inbox_mark_all_read 工具实现
+//! ghostcode_group_list 工具实现
 //!
-//! 将当前 Actor 的所有未读消息标记为已读
-//! 对应 Daemon op: "inbox_mark_all_read"
-//!
-//! 参考: cccc/src/cccc/ports/mcp/handlers/cccc_core.py:216-219
+//! 列出所有可用的工作组（group）信息
+//! 对应 Daemon op: "groups"
 //!
 //! @author Atlas.oi
-//! @date 2026-03-01
+//! @date 2026-03-04
 
 use ghostcode_types::ipc::DaemonRequest;
 use crate::server::call_daemon;
 use super::{ToolContext, ToolError};
 
+/// 返回工具的 JSON Schema 定义
 pub fn schema() -> serde_json::Value {
     serde_json::json!({
-        "name": "ghostcode_inbox_mark_all_read",
-        "description": "Mark all unread messages as read for the current actor.",
+        "name": "ghostcode_group_list",
+        "description": "List all available working groups.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -24,18 +23,16 @@ pub fn schema() -> serde_json::Value {
     })
 }
 
+/// 执行工具调用 — 通过 IPC 向 Daemon 查询全部 group
 pub async fn execute(
     _args: &serde_json::Value,
     ctx: &ToolContext,
 ) -> Result<serde_json::Value, ToolError> {
+    // 注意：daemon 注册的 op 名称是 "groups"（非 "group_list"）
+    // 保持与 dispatch.rs KNOWN_OPS 中的定义一致
     let req = DaemonRequest::new(
-        "inbox_mark_all_read",
-        serde_json::json!({
-            "group_id": ctx.group_id,
-            "actor_id": ctx.actor_id,
-            "kind_filter": "all",
-            "by": ctx.actor_id
-        }),
+        "groups",
+        serde_json::json!({}),
     );
 
     let result = call_daemon(&ctx.daemon_addr, req).await?;

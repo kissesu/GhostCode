@@ -15,6 +15,17 @@ use ghostcode_router::sovereignty::SovereigntyGuard;
 // 数据结构定义
 // ============================================
 
+/// 子任务摘要（并行任务组汇总用）
+///
+/// 记录单个子任务的 id 和最终状态，供 route_status 返回 subtasks 数组
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SubtaskSummary {
+    /// 子任务 ID（来自 TaskSpec.id）
+    pub id: String,
+    /// 子任务最终状态：completed | failed | skipped | cancelled
+    pub status: String,
+}
+
 /// 路由任务状态快照
 ///
 /// 记录单个路由任务的完整状态信息，用于查询和日志
@@ -26,10 +37,12 @@ pub struct RouteTaskState {
     pub group_id: String,
     /// 任务当前状态：pending | running | completed | failed | cancelled
     pub status: String,
-    /// 目标后端名称（如 "claude" / "codex" / "gemini"）
+    /// 目标后端名称（如 "claude" / "codex" / "gemini" / "parallel"）
     pub backend: String,
     /// 任务执行结果（完成时填充输出文本）
     pub result: Option<String>,
+    /// 并行任务组的子任务汇总（仅 backend="parallel" 时有值）
+    pub subtasks: Option<Vec<SubtaskSummary>>,
 }
 
 // ============================================
@@ -78,6 +91,7 @@ impl RoutingState {
             status: "pending".to_string(),
             backend: backend.to_string(),
             result: None,
+            subtasks: None,
         };
         let mut tasks = self.tasks.write().await;
         let key = (group_id.to_string(), task_id.to_string());
@@ -132,6 +146,40 @@ impl RoutingState {
             true
         } else {
             false
+        }
+    }
+
+    /// 更新并行任务组的最终结果（汇总子任务状态）
+    ///
+    /// 业务逻辑：
+    /// 1. 根据子任务汇总列表判断整体状态：
+    ///    - 所有子任务都是 completed → completed
+    ///    - 任意子任务 failed/skipped/cancelled → failed
+    /// 2. 将 subtasks 列表写入组合任务的 subtasks 字段
+    /// 3. 组合任务不存在时静默忽略（幂等）
+    ///
+    /// @param group_id - 所属 Group ID
+    /// @param task_id - 组合任务 ID（通过 route_task_parallel 注册的 UUID）
+    /// @param subtasks - 子任务摘要列表
+    pub async fn update_parallel_group_result(
+        &self,
+        group_id: &str,
+        task_id: &str,
+        subtasks: Vec<SubtaskSummary>,
+    ) {
+        // 根据子任务汇总判断整体状态：
+        // 所有子任务 completed → completed；任意非 completed → failed
+        let overall_status = if subtasks.iter().all(|s| s.status == "completed") {
+            "completed"
+        } else {
+            "failed"
+        };
+
+        let mut tasks = self.tasks.write().await;
+        let key = (group_id.to_string(), task_id.to_string());
+        if let Some(entry) = tasks.get_mut(&key) {
+            entry.status = overall_status.to_string();
+            entry.subtasks = Some(subtasks);
         }
     }
 

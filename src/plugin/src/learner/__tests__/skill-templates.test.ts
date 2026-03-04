@@ -41,7 +41,8 @@ const REQUIRED_FIELDS = ["id", "name", "description", "triggers", "source", "ver
 function parseFrontmatter(content: string): Record<string, unknown> {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
-  const yaml = match[1];
+  // match[1] 在正则匹配成功后一定存在，用 ?? "" 保证类型安全
+  const yaml = match[1] ?? "";
   const result: Record<string, unknown> = {};
   for (const line of yaml.split("\n")) {
     const colonIdx = line.indexOf(":");

@@ -86,9 +86,9 @@ describe("E2E - resolveSocketPath 三级回退集成", () => {
     // 确保环境变量为空
     delete process.env[SOCKET_ENV_KEY];
 
-    // mock readFileSync 返回 addr.json 内容
+    // mock readFileSync 返回 addr.json 内容（直接返回 string，与实际 utf-8 读取的行为一致）
     vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({ path: "/tmp/from-addr-json.sock" }) as unknown as Buffer
+      JSON.stringify({ path: "/tmp/from-addr-json.sock" })
     );
 
     const { resolveSocketPath } = await import("../ipc.js");
@@ -332,8 +332,10 @@ describe("E2E - Session Lease 生命周期", () => {
     }
 
     // 依次释放，验证 refcount 递减
+    // leases 数组由循环 push 填充，i 范围由 leases.length 控制，leases[i] 一定有值
     for (let i = 0; i < leases.length; i++) {
-      const result = manager.releaseLease(leases[i]);
+      const leaseId = leases[i] as string;
+      const result = manager.releaseLease(leaseId);
       const remaining = leases.length - i - 1;
       expect(result.refcount).toBe(remaining);
       expect(result.isLast).toBe(remaining === 0);
@@ -496,6 +498,7 @@ describe("E2E - Stop Handler 安全停止集成", () => {
 // 测试套件 5：callDaemon 使用 resolveSocketPath 连接失败场景
 // 覆盖：设置不存在的 socket 路径后 callDaemon 抛出 IpcConnectionError
 // ============================================
+// （套件 5 保持原有内容，后面新增套件 6 和 7）
 describe("E2E - callDaemon 连接失败链路", () => {
   let originalEnv: string | undefined;
 

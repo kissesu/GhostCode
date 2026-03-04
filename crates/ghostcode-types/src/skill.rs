@@ -101,3 +101,36 @@ impl SkillMetadata {
         self.quality <= 100
     }
 }
+
+/// 团队技能摘要 — 用于 team_skill_list 响应
+///
+/// 跨 group 聚合后的技能视图：
+/// - 同名技能（相同 problem+solution）去重，保留最高 confidence
+/// - source_groups 记录该技能来源于哪些 group
+/// - total_occurrences 为所有 group 的累计观察次数
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TeamSkillSummary {
+    /// 技能名称（取自 problem 字段，作为人类可读标识）
+    pub name: String,
+    /// 技能来源 group 列表（可能跨多个 group）
+    pub source_groups: Vec<String>,
+    /// 最高置信度（跨 group 取最大值，范围 0-100）
+    pub confidence: f64,
+    /// 总出现次数（跨 group 累加）
+    pub total_occurrences: u32,
+    /// 技能描述（取自 solution 字段）
+    pub description: Option<String>,
+    /// 内容去重 key（基于 problem+solution 的 hash，用于跨 group 去重）
+    pub dedup_key: String,
+}
+
+/// team_skill_list 查询参数
+///
+/// 所有字段均为可选，不传时返回全部未过滤的聚合结果
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TeamSkillQuery {
+    /// 可选：按最低 confidence 过滤（只返回 confidence >= min_confidence 的技能）
+    pub min_confidence: Option<f64>,
+    /// 可选：限制返回数量（按 confidence 降序、occurrences 降序取前 N 条）
+    pub limit: Option<usize>,
+}

@@ -1,20 +1,27 @@
 //! axum HTTP 路由器
 //!
 //! 组装所有 REST + SSE 路由，供 ghostcode-web 主入口和测试使用
+//! Phase 6 新增：skills 端点通过 IPC client 代理到 ghostcode-daemon
 //!
 //! @author Atlas.oi
-//! @date 2026-03-03
+//! @date 2026-03-04
 
 use axum::{
     extract::{Path, State},
-    response::sse::{Event, KeepAlive, Sse},
+    http::StatusCode,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
+use ghostcode_types::ipc::DaemonRequest;
 use std::convert::Infallible;
 use tokio_stream::StreamExt;
 
 use crate::handlers::{handle_agents, handle_dashboard_snapshot, handle_health, handle_timeline};
+use crate::ipc::{call_daemon, IpcError};
 use crate::sse::tail_ledger_as_sse;
 use crate::state::WebState;
 
@@ -82,32 +89,128 @@ async fn handle_sse_stream(
 
 /// GET /api/groups/:group_id/skills - 列出 Skill 候选
 ///
-/// W1 修复：为前端提供 skills 端点
-/// 注意：ghostcode-web 是独立进程，不直接访问 daemon 内存状态
-/// 当前返回空数组占位，后续通过 IPC 调用 daemon 的 skill_list op 获取真实数据
+/// Phase 6 实现：通过 Unix Socket IPC 调用 daemon skill_list op 获取实际数据
 ///
-/// @param _state - 应用状态（当前未使用，占位备用）
-/// @param _group_id - URL 路径参数（当前未使用）
+/// 业务逻辑：
+/// 1. 从 WebState 获取 daemon socket 路径
+/// 2. 构造 DaemonRequest { op: "skill_list", args: { group_id } }
+/// 3. 调用 IPC client 发送请求，等待 DaemonResponse
+/// 4. daemon 返回 ok -> 200 + JSON 数据
+/// 5. IPC 连接失败（daemon 不可达）-> 502 Bad Gateway
+/// 6. daemon 返回错误 -> 502 Bad Gateway
+///
+/// @param state - 应用状态，包含 daemon_socket_path
+/// @param group_id - URL 路径参数
 async fn handle_skills_list(
-    State(_state): State<WebState>,
-    Path(_group_id): Path<String>,
-) -> Json<serde_json::Value> {
-    // TODO：后续通过 Unix Socket IPC 调用 daemon skill_list op 获取实际数据
-    Json(serde_json::json!([]))
+    State(state): State<WebState>,
+    Path(group_id): Path<String>,
+) -> Response {
+    // 构造 skill_list 请求
+    let request = DaemonRequest::new(
+        "skill_list",
+        serde_json::json!({ "group_id": group_id }),
+    );
+
+    // 通过 IPC 调用 daemon
+    match call_daemon(&state.daemon_socket_path, &request).await {
+        Ok(resp) if resp.ok => {
+            // daemon 返回成功，直接透传 result 字段
+            Json(resp.result).into_response()
+        }
+        Ok(resp) => {
+            // daemon 返回业务错误（ok: false）
+            let error_msg = resp
+                .error
+                .map(|e| format!("{}: {}", e.code, e.message))
+                .unwrap_or_else(|| "daemon 返回未知错误".to_string());
+            tracing::warn!("skill_list daemon 返回错误: {}", error_msg);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": error_msg })),
+            )
+                .into_response()
+        }
+        Err(IpcError::ConnectionFailed(e)) => {
+            // daemon 不可达（socket 不存在或连接拒绝）
+            tracing::warn!("skill_list daemon 不可达: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": "daemon 不可达" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            // 其他 IPC 错误
+            tracing::error!("skill_list IPC 错误: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("IPC 错误: {}", e) })),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// POST /api/groups/:group_id/skills/:skill_id/promote - 提升 Skill
 ///
-/// W1 修复：为前端提供 skill promote 端点
-/// 注意：ghostcode-web 是独立进程，不直接访问 daemon 内存状态
-/// 当前返回 accepted 占位，后续通过 IPC 调用 daemon 的 skill_promote op
+/// Phase 6 实现：通过 Unix Socket IPC 调用 daemon skill_promote op
 ///
-/// @param _state - 应用状态（当前未使用，占位备用）
+/// 业务逻辑：
+/// 1. 从 WebState 获取 daemon socket 路径
+/// 2. 构造 DaemonRequest { op: "skill_promote", args: { group_id, skill_id } }
+/// 3. 调用 IPC client 发送请求，等待 DaemonResponse
+/// 4. daemon 返回 ok -> 200 + JSON 数据
+/// 5. IPC 连接失败（daemon 不可达）-> 502 Bad Gateway
+/// 6. daemon 返回错误 -> 502 Bad Gateway
+///
+/// @param state - 应用状态，包含 daemon_socket_path
 /// @param path - URL 路径参数（group_id, skill_id）
 async fn handle_skill_promote(
-    State(_state): State<WebState>,
-    Path((_group_id, skill_id)): Path<(String, String)>,
-) -> Json<serde_json::Value> {
-    // TODO：后续通过 Unix Socket IPC 调用 daemon skill_promote op 执行真实提升
-    Json(serde_json::json!({ "accepted": true, "skill_id": skill_id }))
+    State(state): State<WebState>,
+    Path((group_id, skill_id)): Path<(String, String)>,
+) -> Response {
+    // 构造 skill_promote 请求
+    let request = DaemonRequest::new(
+        "skill_promote",
+        serde_json::json!({ "group_id": group_id, "skill_id": skill_id }),
+    );
+
+    // 通过 IPC 调用 daemon
+    match call_daemon(&state.daemon_socket_path, &request).await {
+        Ok(resp) if resp.ok => {
+            // daemon 返回成功，直接透传 result 字段
+            Json(resp.result).into_response()
+        }
+        Ok(resp) => {
+            // daemon 返回业务错误（ok: false）
+            let error_msg = resp
+                .error
+                .map(|e| format!("{}: {}", e.code, e.message))
+                .unwrap_or_else(|| "daemon 返回未知错误".to_string());
+            tracing::warn!("skill_promote daemon 返回错误: {}", error_msg);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": error_msg })),
+            )
+                .into_response()
+        }
+        Err(IpcError::ConnectionFailed(e)) => {
+            // daemon 不可达（socket 不存在或连接拒绝）
+            tracing::warn!("skill_promote daemon 不可达: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": "daemon 不可达" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            // 其他 IPC 错误
+            tracing::error!("skill_promote IPC 错误: {}", e);
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("IPC 错误: {}", e) })),
+            )
+                .into_response()
+        }
+    }
 }

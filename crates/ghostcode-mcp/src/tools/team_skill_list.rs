@@ -1,21 +1,20 @@
-//! ghostcode_inbox_mark_all_read 工具实现
+//! ghostcode_team_skill_list 工具实现
 //!
-//! 将当前 Actor 的所有未读消息标记为已读
-//! 对应 Daemon op: "inbox_mark_all_read"
-//!
-//! 参考: cccc/src/cccc/ports/mcp/handlers/cccc_core.py:216-219
+//! 跨 group 聚合技能列表，返回整个团队（所有 group）的技能汇总
+//! 对应 Daemon op: "team_skill_list"
 //!
 //! @author Atlas.oi
-//! @date 2026-03-01
+//! @date 2026-03-04
 
 use ghostcode_types::ipc::DaemonRequest;
 use crate::server::call_daemon;
 use super::{ToolContext, ToolError};
 
+/// 返回工具的 JSON Schema 定义
 pub fn schema() -> serde_json::Value {
     serde_json::json!({
-        "name": "ghostcode_inbox_mark_all_read",
-        "description": "Mark all unread messages as read for the current actor.",
+        "name": "ghostcode_team_skill_list",
+        "description": "List skills aggregated across all groups in the team.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -24,18 +23,14 @@ pub fn schema() -> serde_json::Value {
     })
 }
 
+/// 执行工具调用 — 通过 IPC 向 Daemon 获取跨 group 聚合技能列表
 pub async fn execute(
     _args: &serde_json::Value,
     ctx: &ToolContext,
 ) -> Result<serde_json::Value, ToolError> {
     let req = DaemonRequest::new(
-        "inbox_mark_all_read",
-        serde_json::json!({
-            "group_id": ctx.group_id,
-            "actor_id": ctx.actor_id,
-            "kind_filter": "all",
-            "by": ctx.actor_id
-        }),
+        "team_skill_list",
+        serde_json::json!({}),
     );
 
     let result = call_daemon(&ctx.daemon_addr, req).await?;

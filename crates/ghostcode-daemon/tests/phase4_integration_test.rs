@@ -288,7 +288,138 @@ async fn phase4_skill_low_confidence_rejected() {
     assert!(candidates.is_empty(), "低置信度片段不应创建候选");
 }
 
-/// 验证 skill_promote 对不存在候选返回错误
+// ============================================
+// 场景 4：skill_extract 最小可行实现测试
+// ============================================
+
+/// 验证 skill_extract 不再返回 NOT_IMPLEMENTED 错误
+///
+/// Phase 6 Task 5：skill_extract 从 stub 升级为可用实现
+#[tokio::test]
+async fn skill_extract_no_longer_returns_not_implemented() {
+    let state = AppState::default();
+    let group_id = "test-group-extract";
+
+    // skill_extract 传入基本参数，不应返回 NOT_IMPLEMENTED
+    let req = make_req(
+        "skill_extract",
+        json!({
+            "group_id": group_id,
+            "problem": "如何处理 Rust 异步运行时错误",
+            "solution": "使用 tokio::main 宏并在 async 函数中处理错误"
+        }),
+    );
+    let resp = dispatch(&state, req).await;
+
+    // 核心断言：不再返回 NOT_IMPLEMENTED
+    if let Some(err) = &resp.error {
+        assert_ne!(
+            err.code, "NOT_IMPLEMENTED",
+            "skill_extract 不应返回 NOT_IMPLEMENTED，实际错误: {:?}",
+            err
+        );
+    }
+}
+
+/// 验证 skill_extract 从 transcript 提取片段创建候选
+///
+/// 输入高质量的 problem/solution 对，应该创建候选并返回候选数据
+#[tokio::test]
+async fn skill_extract_from_transcript_creates_candidate() {
+    let state = AppState::default();
+    let group_id = "test-group-extract-candidate";
+
+    // 提交高置信度的 problem/solution 对
+    let req = make_req(
+        "skill_extract",
+        json!({
+            "group_id": group_id,
+            "problem": "Rust 编译器报错：cannot borrow as mutable because it is also borrowed as immutable",
+            "solution": "使用 RefCell 或在不同作用域中使用借用，避免同时存在可变和不可变引用"
+        }),
+    );
+    let resp = dispatch(&state, req).await;
+
+    // skill_extract 返回 ok
+    assert!(
+        resp.ok,
+        "skill_extract 应返回 ok=true，错误: {:?}",
+        resp.error
+    );
+
+    // 返回候选数据（非 null）
+    assert!(
+        !resp.result.is_null(),
+        "skill_extract 应返回候选数据而非 null，实际: {}",
+        resp.result
+    );
+
+    // 候选应有 id 字段
+    assert!(
+        resp.result.get("id").is_some(),
+        "skill_extract 返回的候选应有 id 字段，实际: {}",
+        resp.result
+    );
+}
+
+/// 验证 skill_extract 低质量输入时返回 null（而非错误）
+///
+/// 当 problem 或 solution 为空时，启发式提取判断为低信号，返回 null candidate
+#[tokio::test]
+async fn skill_extract_low_signal_returns_null_candidate() {
+    let state = AppState::default();
+    let group_id = "test-group-extract-low-signal";
+
+    // 提交空 problem，应为低信号
+    let req = make_req(
+        "skill_extract",
+        json!({
+            "group_id": group_id,
+            "problem": "",
+            "solution": ""
+        }),
+    );
+    let resp = dispatch(&state, req).await;
+
+    // 应返回 ok（不抛出错误）
+    assert!(
+        resp.ok,
+        "skill_extract 空输入应返回 ok=true，错误: {:?}",
+        resp.error
+    );
+
+    // 低信号应返回 null candidate
+    assert!(
+        resp.result.is_null(),
+        "skill_extract 低信号应返回 null result，实际: {}",
+        resp.result
+    );
+}
+
+/// 验证 skill_extract 缺少 group_id 返回 INVALID_ARGS 错误
+#[tokio::test]
+async fn skill_extract_missing_group_id_returns_error() {
+    let state = AppState::default();
+
+    let req = make_req(
+        "skill_extract",
+        json!({
+            "problem": "某个问题",
+            "solution": "某个解决方案"
+        }),
+    );
+    let resp = dispatch(&state, req).await;
+
+    // 缺少 group_id 应返回错误
+    assert!(!resp.ok, "缺少 group_id 的 skill_extract 应返回 ok=false");
+    assert_eq!(
+        resp.error.as_ref().unwrap().code,
+        "INVALID_ARGS",
+        "缺少 group_id 应返回 INVALID_ARGS 错误"
+    );
+}
+
+/// 验证 skill_extract 不存在候选返回错误
 #[tokio::test]
 async fn phase4_skill_promote_nonexistent_returns_error() {
     let state = AppState::default();

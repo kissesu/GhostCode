@@ -167,7 +167,8 @@ describe("Phase 4 Skill 模板文件加载验证", () => {
     const match = content.match(/^---\n([\s\S]*?)\n---/);
     if (!match) return {};
     const result: Record<string, string> = {};
-    for (const line of match[1].split("\n")) {
+    // match[1] 在正则匹配成功后一定存在，用 ?? "" 保证类型安全
+    for (const line of (match[1] ?? "").split("\n")) {
       const colonIdx = line.indexOf(":");
       if (colonIdx === -1) continue;
       const key = line.slice(0, colonIdx).trim();
@@ -213,7 +214,8 @@ createdAt: 2026-03-03T00:00:00.000Z
     const skills = await loadSkillsFromDir(tempDir);
     expect(skills.length).toBe(1);
 
-    const skill = skills[0];
+    // skills.length 已断言为 1，此处必然存在元素
+    const skill = skills[0]!;
     expect(skill.metadata.id).toBe("phase4-test-skill");
     expect(skill.metadata.name).toBe("Phase 4 测试 Skill");
     expect(skill.metadata.source).toBe("extracted");

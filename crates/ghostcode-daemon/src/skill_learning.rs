@@ -152,6 +152,48 @@ pub fn list_skill_candidates(store: &SkillStore) -> Vec<PatternDetection> {
     store.candidates().into_iter().cloned().collect()
 }
 
+/// 从原始 problem/solution 文本中提取 Skill 候选片段（纯函数）
+///
+/// 启发式提取规则：
+/// 1. 若 problem 和 solution 均非空（trim 后长度 > 0）-> 置信度 75（高信号）
+/// 2. 若仅 problem 或 solution 其中一个非空 -> 置信度 50（低信号，低于质量门 70）
+/// 3. 若均为空 -> 置信度 0，直接返回 None（低信号）
+///
+/// Phase 6 Task 5：此函数被 handle_skill_extract 调用，替代 stub 实现
+///
+/// @param problem - 问题描述文本
+/// @param solution - 解决方案文本
+/// @returns 若信号充足则返回 Some(SessionFragment)，否则返回 None
+pub fn extract_skill_fragment(problem: &str, solution: &str) -> Option<SessionFragment> {
+    let problem = problem.trim();
+    let solution = solution.trim();
+
+    // 均为空：低信号，直接返回 None
+    if problem.is_empty() && solution.is_empty() {
+        return None;
+    }
+
+    // 根据两者是否都有内容确定置信度
+    let confidence = if !problem.is_empty() && !solution.is_empty() {
+        // 双字段都有内容：高信号，置信度超过质量门（70）
+        75u8
+    } else {
+        // 仅一个字段有内容：低信号，低于质量门（70），ingest 会丢弃
+        50u8
+    };
+
+    Some(SessionFragment {
+        problem: problem.to_string(),
+        solution: solution.to_string(),
+        confidence,
+        // 启发式提取无法提供外部上下文
+        context: String::new(),
+        // 启发式提取无法推断触发词和标签
+        suggested_triggers: vec![],
+        suggested_tags: vec![],
+    })
+}
+
 /// 将候选提升为正式 LearnedSkill
 ///
 /// 业务逻辑：

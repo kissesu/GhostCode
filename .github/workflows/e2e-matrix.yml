@@ -1,0 +1,134 @@
+# @file E2E 回归矩阵 workflow
+# @description 跨平台端到端测试，覆盖 macOS ARM/x64 + Linux x64
+#              分层测试标签：smoke / contract / full-chain
+#              触发条件：push to main, pull_request to main
+# @author Atlas.oi
+# @date 2026-03-04
+
+name: E2E 回归矩阵
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  # 固定 Rust 版本，与 release.yml 保持一致
+  RUST_VERSION: "1.75"
+  # pnpm 版本
+  PNPM_VERSION: "9"
+  # 测试超时（分钟）
+  TEST_TIMEOUT: 30
+
+jobs:
+  # ============================================================
+  # job: e2e-matrix（矩阵）
+  # 三平台并行执行 Rust E2E + TS E2E 全量测试
+  # ============================================================
+  e2e-matrix:
+    name: E2E @ ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    strategy:
+      # 所有平台独立运行，单平台失败不阻断其他平台
+      fail-fast: false
+      matrix:
+        include:
+          # macOS ARM（Apple Silicon）
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+
+          # macOS Intel（GitHub 提供的 Intel runner 是 macos-13）
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            platform: darwin-x64
+
+          # Linux x64
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x64
+
+    steps:
+      # ============================================================
+      # 步骤 1：检出代码
+      # ============================================================
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 步骤 2：安装 Rust toolchain
+      # ============================================================
+      - name: 安装 Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      # ============================================================
+      # Rust 编译缓存（加速 CI 构建）
+      # ============================================================
+      - name: 缓存 Rust 编译产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: e2e-${{ matrix.target }}
+
+      # ============================================================
+      # 步骤 3：安装 Node.js（通过 pnpm action，不使用 volta）
+      # ============================================================
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: src/plugin/pnpm-lock.yaml
+
+      # ============================================================
+      # 步骤 4：构建 Rust 二进制（release 模式，供 E2E 使用）
+      # ============================================================
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ============================================================
+      # 步骤 5：运行 Rust E2E 测试（smoke + contract 层）
+      #
+      # 分层说明：
+      #   e2e_stdio_test - smoke 层：MCP stdio 协议基础功能
+      #   e2e_ipc_test   - contract 层：Daemon IPC 契约验证
+      # ============================================================
+      - name: 运行 Rust E2E 测试（smoke + contract）
+        run: cargo test --test e2e_stdio_test --test e2e_ipc_test -- --test-threads=4
+        env:
+          # 指定 MCP 二进制路径供 e2e_stdio_test 使用
+          GHOSTCODE_MCP_BIN: target/${{ matrix.target }}/release/ghostcode-mcp
+
+      # ============================================================
+      # 步骤 6：安装 plugin TS 依赖
+      # ============================================================
+      - name: 安装 plugin 依赖（pnpm install）
+        working-directory: src/plugin
+        run: pnpm install --frozen-lockfile
+
+      # ============================================================
+      # 步骤 7：运行 TS E2E 测试（full-chain 层）
+      #
+      # 分层说明：
+      #   e2e-full-chain.test.ts - full-chain 层：完整链路集成验证
+      # ============================================================
+      - name: 运行 TS E2E 测试（full-chain）
+        working-directory: src/plugin
+        run: pnpm test -- --reporter=verbose --grep "e2e"
+        env:
+          # 将构建好的二进制路径注入，供 daemon 测试使用
+          GHOSTCODE_DAEMON_BIN: ${{ github.workspace }}/target/${{ matrix.target }}/release/ghostcode-daemon

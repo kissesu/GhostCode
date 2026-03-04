@@ -45,7 +45,8 @@ describe("loadSkillsFromDir", () => {
     writeFileSync(join(tempDir, "test-skill.md"), VALID_SKILL);
     const skills = await loadSkillsFromDir(tempDir);
     expect(skills.length).toBe(1);
-    expect(skills[0].metadata.id).toBe("test-skill");
+    // skills.length 已断言为 1，此处必然存在元素
+    expect(skills[0]!.metadata.id).toBe("test-skill");
   });
 
   test("忽略非 .md 文件", async () => {

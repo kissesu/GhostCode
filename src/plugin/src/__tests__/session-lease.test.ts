@@ -230,7 +230,8 @@ describe("SessionLeaseManager PBT: refcount 始终 >= 0", () => {
               if (releasePattern[i]) {
                 // 随机选一个 leaseId release
                 const idx = i % leaseIds.length;
-                const leaseId = leaseIds.splice(idx, 1)[0];
+                // splice 返回数组，此处 leaseIds 非空（外层已做 leaseIds.length > 0 检查）
+                const leaseId = leaseIds.splice(idx, 1)[0] as string;
                 const result = manager.releaseLease(leaseId);
                 // 核心不变量：refcount 始终 >= 0
                 expect(result.refcount).toBeGreaterThanOrEqual(0);

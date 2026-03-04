@@ -52,3 +52,11 @@ pub async fn execute(
     let result = call_daemon(&ctx.daemon_addr, req).await?;
     Ok(result)
 }
+
+/// 注册表调用入口 — 按值接收参数，供 ToolDescriptor::execute 使用
+pub async fn execute_owned(
+    args: serde_json::Value,
+    ctx: ToolContext,
+) -> Result<serde_json::Value, ToolError> {
+    execute(&args, &ctx).await
+}

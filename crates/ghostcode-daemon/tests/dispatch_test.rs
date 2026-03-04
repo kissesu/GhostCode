@@ -85,18 +85,18 @@ async fn stub_ops_return_not_implemented() {
     let state = AppState::default();
 
     // 除了已实现的 handler，其余 op 应返回 NOT_IMPLEMENTED
-    // 已实现（38 个中的 36 个）:
+    // 已实现（40 个中的 40 个）:
     //   Phase 1: ping, shutdown, actor_start, actor_stop, headless_status, headless_set_status (6 个)
     //   T11/T12: send, reply, inbox_list, inbox_mark_read, inbox_mark_all_read (5 个)
     //   Phase 2: route_task, route_task_parallel, route_status, route_cancel, session_list (5 个)
     //   Phase 3: verification_start, verification_status, verification_cancel, hud_snapshot (4 个)
     //   Phase 4 Dashboard: dashboard_snapshot, dashboard_timeline, dashboard_agents (3 个)
-    //   Phase 4 Skill: skill_list, skill_promote, skill_learn_fragment (3 个)
+    //   Phase 4 Skill: skill_list, skill_promote, skill_learn_fragment, skill_extract (4 个)
     //   Group ops（新增实现）: group_create, group_show, group_start, group_stop,
     //                          group_delete, group_set_state, groups (7 个)
     //   Actor ops（新增实现）: actor_add, actor_list, actor_remove (3 个)
-    // stub（2 个）:
-    //   Skill: skill_extract, team_skill_list (2 个，依赖 LLM 调用链和跨 group 聚合）
+    //   P9-T2: team_skill_list（跨 group 聚合，正式实现）(1 个)
+    // stub（0 个）: 所有 op 均已实现
     let stub_ops: Vec<&&str> = KNOWN_OPS
         .iter()
         .filter(|op| {
@@ -128,10 +128,12 @@ async fn stub_ops_return_not_implemented() {
                 && **op != "dashboard_snapshot"
                 && **op != "dashboard_timeline"
                 && **op != "dashboard_agents"
-                // Phase 4 Skill Learning op（3 个，已实现）
+                // Phase 4 Skill Learning op（5 个，均已实现，P9-T2 实现了 team_skill_list）
                 && **op != "skill_list"
                 && **op != "skill_promote"
                 && **op != "skill_learn_fragment"
+                && **op != "skill_extract"
+                && **op != "team_skill_list"
                 // Group ops（7 个，已路由到 group 模块实现）
                 && **op != "group_create"
                 && **op != "group_show"
@@ -147,9 +149,8 @@ async fn stub_ops_return_not_implemented() {
         })
         .collect();
 
-    // skill_extract（依赖 LLM 抽取器调用链）
-    // team_skill_list（依赖跨 group 聚合，属于高权限操作）
-    assert_eq!(stub_ops.len(), 2, "应有 2 个占位 op（skill_extract, team_skill_list）");
+    // P9-T2 已实现 team_skill_list，所有 op 均不再是 stub
+    assert_eq!(stub_ops.len(), 0, "应有 0 个占位 op（所有 op 均已实现）");
 
     for op in stub_ops {
         let req = DaemonRequest::new(*op, serde_json::json!({}));

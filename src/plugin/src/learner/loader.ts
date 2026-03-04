@@ -53,7 +53,10 @@ function parseSkillFile(
   const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) return null;
 
-  const [, yamlStr, body] = match;
+  // 从正则匹配结果中提取 YAML 区域和 body 内容
+  // match[1] 和 match[2] 理论上在正则匹配成功后一定存在，但 TypeScript 无法推断
+  const yamlStr = match[1] ?? "";
+  const body = match[2] ?? "";
   const metadata = parseYaml(yamlStr);
   if (!metadata.id || !metadata.name) return null;
 
@@ -74,7 +77,7 @@ function parseSkillFile(
       usageCount: Number(metadata.usageCount ?? 0),
       tags: parseTriggers(metadata.tags),
     } satisfies SkillMetadata,
-    content: body.trim(),
+    content: body.trim(), // body 已在上方 narrowing 处理，此处不会是 undefined
     contentHash,
     priority: filepath.includes(".claude/skills") ? 10 : 5,
   };
