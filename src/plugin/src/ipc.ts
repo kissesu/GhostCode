@@ -13,8 +13,11 @@
  */
 
 import * as net from "node:net";
+import { homedir } from "node:os";
+import { readFileSync } from "node:fs";
 import type { StreamEvent, StreamCallbacks } from "./router/streaming";
 import { parseStreamEvent, StreamingHandler } from "./router/streaming";
+import { join } from "node:path";
 
 // ============================================
 // 协议类型定义
@@ -555,6 +558,52 @@ function _getClient(socketPath: string): IpcClient {
   return _client;
 }
 
+// Daemon addr.json 文件路径常量（与 daemon.ts 中定义保持一致）
+const ADDR_JSON_PATH = join(homedir(), ".ghostcode", "daemon", "ghostcoded.addr.json");
+
+/**
+ * 解析 Socket 路径（三级回退策略）
+ *
+ * 优先级规则：
+ * 1. 显式参数 - 调用方直接传入的路径，优先级最高
+ * 2. 环境变量 GHOSTCODE_SOCKET_PATH - Daemon 启动后由 preToolUseHandler 注入
+ * 3. addr.json 文件 - 从 ~/.ghostcode/daemon/ghostcoded.addr.json 读取 path 字段
+ * 4. 全部失败 - 返回 null，由调用方决定如何处理
+ *
+ * @param explicit - 显式指定的 socket 路径（可选）
+ * @returns 解析到的 socket 路径，若三级均无法找到则返回 null
+ */
+export function resolveSocketPath(explicit?: string): string | null {
+  // ============================================
+  // 第一级：显式参数优先
+  // 调用方明确指定时直接使用，不走回退链
+  // ============================================
+  if (explicit) return explicit;
+
+  // ============================================
+  // 第二级：环境变量
+  // Daemon 启动后由 preToolUseHandler 注入 GHOSTCODE_SOCKET_PATH
+  // ============================================
+  const envPath = process.env["GHOSTCODE_SOCKET_PATH"];
+  if (envPath) return envPath;
+
+  // ============================================
+  // 第三级：从 addr.json 文件读取
+  // Daemon 启动时会将地址信息写入 ~/.ghostcode/daemon/ghostcoded.addr.json
+  // ============================================
+  try {
+    const content = readFileSync(ADDR_JSON_PATH, "utf-8");
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (parsed?.path && typeof parsed.path === "string") {
+      return parsed.path;
+    }
+  } catch {
+    // 文件不存在或解析失败，继续返回 null
+  }
+
+  return null;
+}
+
 /**
  * 向 Daemon 发起一次 RPC 调用（公共 API）
  *
@@ -562,17 +611,23 @@ function _getClient(socketPath: string): IpcClient {
  *
  * @param op - 操作名称
  * @param args - 操作参数（默认为 {}）
- * @param socketPath - Unix socket 路径
+ * @param socketPath - Unix socket 路径（可选，未传入时通过 resolveSocketPath 自动发现）
  * @returns Daemon 响应
+ * @throws {IpcConnectionError} 无法解析 Socket 路径时抛出
  */
 export async function callDaemon(
   op: string,
   args: Record<string, unknown> = {},
   socketPath?: string
 ): Promise<DaemonResponse> {
-  const resolvedPath = socketPath
-    ?? process.env["GHOSTCODE_SOCKET_PATH"]
-    ?? "";
+  // 使用三级回退策略解析 socket 路径
+  const resolvedPath = resolveSocketPath(socketPath);
+  if (!resolvedPath) {
+    throw new IpcConnectionError(
+      "<未找到>",
+      new Error("无法解析 Socket 路径。请确保 Daemon 已启动或设置 GHOSTCODE_SOCKET_PATH 环境变量")
+    );
+  }
 
   const client = _getClient(resolvedPath);
   return client.send(op, args);
@@ -598,8 +653,9 @@ export async function resetClient(): Promise<void> {
  * @param op - 操作名称，如 "task.route"
  * @param args - 操作参数（默认为 {}）
  * @param callbacks - 流式事件回调集合
- * @param socketPath - Unix socket 路径（可选，默认读取环境变量）
+ * @param socketPath - Unix socket 路径（可选，未传入时通过 resolveSocketPath 自动发现）
  * @returns 流结束后的 StreamResponse（含所有事件和 sessionId）
+ * @throws {IpcConnectionError} 无法解析 Socket 路径时抛出
  */
 export async function callDaemonStream(
   op: string,
@@ -607,9 +663,14 @@ export async function callDaemonStream(
   callbacks: StreamCallbacks,
   socketPath?: string
 ): Promise<StreamResponse> {
-  const resolvedPath = socketPath
-    ?? process.env["GHOSTCODE_SOCKET_PATH"]
-    ?? "";
+  // 使用三级回退策略解析 socket 路径
+  const resolvedPath = resolveSocketPath(socketPath);
+  if (!resolvedPath) {
+    throw new IpcConnectionError(
+      "<未找到>",
+      new Error("无法解析 Socket 路径（流式调用）。请确保 Daemon 已启动或设置 GHOSTCODE_SOCKET_PATH 环境变量")
+    );
+  }
 
   const client = _getClient(resolvedPath);
   return client.sendStream(op, args, callbacks);

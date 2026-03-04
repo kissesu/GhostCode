@@ -15,6 +15,12 @@ license.workspace = true
 authors.workspace = true
 description = "GhostCode 常驻守护进程（Agent 管理 + 消息路由 + IPC）"
 
+[[bin]]
+# 守护进程可执行文件名：ghostcoded（daemon 惯例 d 后缀）
+# 产物位置：target/debug/ghostcoded 或 target/release/ghostcoded
+name = "ghostcoded"
+path = "src/main.rs"
+
 [dependencies]
 ghostcode-types = { workspace = true }
 ghostcode-ledger = { workspace = true }

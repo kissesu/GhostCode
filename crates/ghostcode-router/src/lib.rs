@@ -30,3 +30,6 @@ pub mod process;
 
 // 公开 executor 模块，提供并行执行引擎（基于 DAG 拓扑排序的层间串行+层内并行调度）
 pub mod executor;
+
+// 公开 runtime_probe 模块，提供 AI CLI 工具运行时探测（检测可用性和版本信息）
+pub mod runtime_probe;

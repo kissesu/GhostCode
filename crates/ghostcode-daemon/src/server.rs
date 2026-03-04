@@ -182,19 +182,23 @@ pub async fn handle_connection(
 
 /// 启动 daemon 服务（主入口）
 ///
-/// 监听 Unix Socket，接受连接并 spawn tokio task 处理
-/// 收到关闭信号后停止接受新连接，等待在途请求完成
+/// 接受已绑定的 UnixListener，进入 accept 循环处理连接。
 ///
-/// @param config - Daemon 配置
-/// @param state - 共享应用状态
+/// 职责分离原则：
+/// - startup.rs 负责 bind socket（确认地址可用）+ 写 addr.json（通知客户端）
+/// - serve_forever 负责 accept 循环 + 连接处理 + 优雅关闭 + socket 文件清理
+///
+/// 这样可消除竞态窗口：addr.json 写入时 socket 必然已经 bind 成功，
+/// 客户端读到 addr.json 后可立即连接，不会出现 ConnectionRefused。
+///
+/// @param listener - 已绑定的 UnixListener（由 startup.rs 的 bind_socket 创建）
+/// @param config   - Daemon 配置（含 socket_path，用于关闭后清理文件）
+/// @param state    - 共享应用状态
 pub async fn serve_forever(
+    listener: UnixListener,
     config: DaemonConfig,
     state: Arc<AppState>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    // socket 文件清理由 startup.rs 的 cleanup_stale_files 在获取单实例锁后统一负责
-    // 此处不再重复删除，避免绕过锁保护误删正在使用的 socket
-    let listener = UnixListener::bind(&config.socket_path)?;
-
     // ============================================
     // 启动投递引擎后台任务
     // 事件订阅 + 每秒 tick 通知在线 Agent
@@ -205,14 +209,6 @@ pub async fn serve_forever(
         tokio::spawn(async move {
             delivery.run(state_for_delivery).await;
         });
-    }
-
-    // 设置 socket 文件权限为 0o600（仅所有者可读写）
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&config.socket_path, perms)?;
     }
 
     loop {

@@ -2,20 +2,25 @@
  * @file hooks/handlers.ts
  * @description GhostCode Plugin Hook 处理器实现
  *              提供四个核心函数：
- *              - preToolUseHandler: 工具调用前确保 Daemon 已启动并启动心跳
- *              - stopHandler: 会话终止时停止心跳并关闭 Daemon
+ *              - preToolUseHandler: 工具调用前确保 Daemon 已启动并启动心跳，并获取 session lease
+ *              - stopHandler: 会话终止时停止心跳，通过引用计数决定是否关闭 Daemon
  *              - userPromptSubmitHandler: 用户提交 prompt 时检测 Magic Keywords 并注入上下文
  *              - initializeHooks: 将上述处理器注册到 Hook 系统
  *
  *              状态管理：
  *              - daemonPromise: 缓存 ensureDaemon 的 Promise，防止重复启动
  *              - stopHeartbeat: 保存心跳停止函数，用于 stopHandler 调用
+ *              - leaseManager: Session Lease 引用计数管理器（多会话共享 Daemon）
+ *              - currentLeaseId: 当前会话的 lease ID，用于 stopHandler 释放
  * @author Atlas.oi
- * @date 2026-03-03
+ * @date 2026-03-04
  */
 
 import { ensureDaemon, stopDaemon, startHeartbeat } from "../daemon.js";
 import type { AddrDescriptor } from "../daemon.js";
+import { SessionLeaseManager } from "../session-lease.js";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { registerHook } from "./registry.js";
 import { detectMagicKeywords, resolveKeywordPriority } from "../keywords/index.js";
 import { writeKeywordState } from "../keywords/state.js";
@@ -49,6 +54,25 @@ let daemonPromise: Promise<AddrDescriptor> | null = null;
  */
 let stopHeartbeat: (() => void) | null = null;
 
+/**
+ * Session Lease 引用计数管理器
+ *
+ * 作用：管理多会话共享单 Daemon 时的引用计数。
+ * 每个会话 acquire 一个 lease，只有最后一个会话 release 时才真正关闭 Daemon。
+ * 默认路径: ~/.ghostcode/daemon/sessions.json
+ */
+const leaseManager = new SessionLeaseManager(
+  join(homedir(), ".ghostcode", "daemon", "sessions.json"),
+);
+
+/**
+ * 当前会话的 lease ID
+ *
+ * 作用：保存 acquireLease 返回的 leaseId，在 stopHandler 中传给 releaseLease 以识别本会话。
+ * 重置：stopHandler 调用后清空。
+ */
+let currentLeaseId: string | null = null;
+
 // ============================================
 // Hook 处理器实现
 // ============================================
@@ -73,15 +97,43 @@ export async function preToolUseHandler(_event: unknown): Promise<void> {
   // 缓存 Promise，防止并发调用触发多次 ensureDaemon
   daemonPromise = ensureDaemon();
 
+  // ============================================
+  // 分层 try-catch：Daemon 启动与本地状态初始化分离
+  // Daemon 启动成功后不应因 lease/heartbeat 异常回退到"未启动"状态
+  // ============================================
+  let addr: AddrDescriptor;
   try {
-    const addr = await daemonPromise;
-    // Daemon 启动成功，开始心跳监控
-    stopHeartbeat = startHeartbeat(addr);
+    addr = await daemonPromise;
   } catch (err) {
     // ensureDaemon 失败时清空缓存，允许下次重试
     // 记录错误但不阻断工具调用流程
     console.error("[GhostCode] Daemon 启动失败，工具调用将继续但无协作功能:", err);
     daemonPromise = null;
+    return;
+  }
+
+  // Daemon 已启动成功，注入环境变量（即使后续 lease/heartbeat 失败也保留）
+  process.env["GHOSTCODE_SOCKET_PATH"] = addr.path;
+
+  // 心跳和 lease 初始化：失败不影响 Daemon 已启动的事实
+  try {
+    stopHeartbeat = startHeartbeat(addr);
+  } catch {
+    // 心跳启动失败不影响核心功能，仅损失自动重连能力
+    console.error("[GhostCode] 心跳启动失败，Daemon 仍可正常使用");
+  }
+
+  // 获取 session lease（引用计数 +1），记录本会话参与 Daemon 使用
+  // 确保只在首次 Daemon 启动时 acquire 一次（幂等保护）
+  if (currentLeaseId === null) {
+    try {
+      const lease = leaseManager.acquireLease();
+      currentLeaseId = lease.leaseId;
+    } catch {
+      // lease 获取失败不影响 Daemon 使用
+      // stopHandler 在 currentLeaseId === null 时将检查 refcount 决定是否关闭
+      console.error("[GhostCode] Session lease 获取失败，停止时将安全降级");
+    }
   }
 }
 
@@ -105,8 +157,44 @@ export async function stopHandler(_event: unknown): Promise<void> {
   // 重置 Daemon 缓存，下次调用 preToolUseHandler 会重新触发 ensureDaemon
   daemonPromise = null;
 
-  // 关闭 Daemon（幂等，未运行时静默返回）
-  await stopDaemon();
+  // ============================================
+  // 基于 Session Lease 的安全停止逻辑
+  // 多会话共享 Daemon 时，只有最后一个会话退出才真正关闭 Daemon
+  //
+  // 两种路径：
+  // 1. 正常路径（有 leaseId）：release 后检查 isLast
+  // 2. 异常路径（无 leaseId，acquire 曾失败）：显式读取 refcount 判断
+  //    只有 refcount === 0 才关闭，防止误杀其他会话正在使用的 Daemon
+  // ============================================
+  let shouldShutdown = false;
+
+  if (currentLeaseId !== null) {
+    // 正常路径：本会话持有 lease，释放后由 isLast 决定
+    try {
+      const result = leaseManager.releaseLease(currentLeaseId);
+      shouldShutdown = result.isLast;
+    } catch {
+      // release 失败：无法确认自己是否为最后一个，保守不关闭
+      // 如果确实是孤儿 Daemon，由心跳超时机制或下次启动时的 cleanup 处理
+      console.error("[GhostCode] Lease 释放失败，保守保留 Daemon 运行");
+    }
+    currentLeaseId = null;
+  } else {
+    // 异常路径：acquire 曾失败，本会话从未持有 lease
+    // 显式读取 refcount，只有确认无其他会话时才关闭
+    try {
+      const refcount = leaseManager.getRefcount();
+      shouldShutdown = refcount === 0;
+    } catch {
+      // 连 refcount 都读不到：无法确认状态，保守不关闭
+      console.error("[GhostCode] 无法读取 refcount，保守保留 Daemon 运行");
+    }
+  }
+
+  if (shouldShutdown) {
+    // 关闭 Daemon（幂等，未运行时静默返回）
+    await stopDaemon();
+  }
 
   // 触发 Skill Learning 分析（会话结束时提取可复用模式）
   try {

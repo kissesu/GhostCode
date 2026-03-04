@@ -6,6 +6,7 @@
 //! @author Atlas.oi
 //! @date 2026-03-01
 
+pub mod bootstrap;
 pub mod jsonrpc;
 pub mod server;
 pub mod tools;

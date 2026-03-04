@@ -1,17 +1,23 @@
 //! Daemon 启动链路
 //!
 //! 封装完整的 Daemon 启动流程：
-//! 锁获取 -> 路径初始化 -> 清理残留 -> AppState -> addr.json/PID -> 信号处理 -> serve_forever -> 退出清理
+//! 锁获取 -> 路径初始化 -> 清理残留 -> AppState -> bind socket -> 写 addr.json/PID -> 信号处理 -> serve_forever -> 退出清理
+//!
+//! 关键顺序约束（竞态修复）：
+//! 必须先 bind socket，再写 addr.json。
+//! 客户端读到 addr.json 时，socket 必然已经就绪可接受连接，
+//! 消除 "addr.json 已存在但 socket 尚未 bind" 的竞态窗口。
 //!
 //! 参考: cccc/src/cccc/daemon_main.py - 单写者进程 + Unix Socket IPC
 //!
 //! @author Atlas.oi
-//! @date 2026-03-02
+//! @date 2026-03-04
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use ghostcode_types::addr::AddrDescriptor;
+use tokio::net::UnixListener;
 
 use crate::lock::try_acquire_singleton_lock;
 use crate::paths::DaemonPaths;
@@ -49,16 +55,20 @@ pub enum StartupError {
 
 /// 运行 Daemon 完整启动链路
 ///
-/// 业务逻辑：
+/// 业务逻辑（严格顺序，消除竞态窗口）：
 /// 1. 获取单实例锁（确保只有一个 Daemon 运行）
 /// 2. 初始化路径（基于 base_dir 派生所有文件路径）
 /// 3. 清理上次异常退出的残留文件
 /// 4. 创建 AppState（共享状态容器）
-/// 5. 写入 addr.json（供客户端查找 socket 路径）
-/// 6. 写入 PID 文件（供运维工具查询进程状态）
-/// 7. 设置信号处理（SIGTERM/SIGINT -> 优雅关闭）
-/// 8. 运行 serve_forever（阻塞直到收到关闭信号）
-/// 9. 退出清理（addr.json 和 PID 文件由 serve_forever 清理 socket 后删除）
+/// 5. **先** bind Unix Socket（确认地址可用，进入 LISTEN 状态）
+/// 6. **然后** 写入 addr.json（此时 socket 已就绪，客户端可安全连接）
+/// 7. 写入 PID 文件（供运维工具查询进程状态）
+/// 8. 设置信号处理（SIGTERM/SIGINT -> 优雅关闭）
+/// 9. 运行 serve_forever（传入已绑定的 listener，阻塞直到收到关闭信号）
+/// 10. 退出清理（addr.json 和 PID 文件在 serve_forever 清理 socket 后删除）
+///
+/// 关键约束：步骤 5 必须在步骤 6 之前完成，
+/// 保证客户端读到 addr.json 时 socket 必然可连接。
 ///
 /// @param config - 启动配置
 /// @return 正常退出或错误
@@ -72,26 +82,19 @@ pub async fn run_daemon(config: StartupConfig) -> Result<(), StartupError> {
     std::fs::create_dir_all(&paths.daemon_dir)?;
 
     // ============================================
-    // 预清理：在获取锁之前立即删除 addr.json
-    //
-    // 原因：addr.json 存在时，客户端/测试辅助函数会认为 Daemon 已就绪。
-    // 如果 run_daemon 在 tokio::spawn 中异步执行，cleanup_stale_files
-    // 可能晚于调用方的等待检查才运行，导致竞态条件（测试误判就绪）。
-    // 提前删除 addr.json 确保等待方必须等到新 addr.json 写入后才继续。
-    // ============================================
-    let _ = std::fs::remove_file(&paths.addr);
-
-    // ============================================
     // 第二步：获取单实例锁
     // 锁被持有期间，其他 Daemon 实例无法启动
+    // 注意：必须在删除 addr.json 之前获取锁，
+    // 否则会误删正在运行的 Daemon 的发现文件
     // ============================================
     let _lock_file = try_acquire_singleton_lock(&paths.lock)?;
 
     // ============================================
-    // 第三步：清理残留文件
+    // 第三步：清理残留文件（锁已持有，安全操作）
     // 处理上次异常退出遗留的 socket/addr/pid 文件
-    // (addr.json 已在预清理步骤中删除)
+    // 包括删除旧的 addr.json，确保等待方必须等到新 addr.json 写入后才继续
     // ============================================
+    let _ = std::fs::remove_file(&paths.addr);
     cleanup_stale_files(&paths.daemon_dir)?;
 
     // ============================================
@@ -101,22 +104,43 @@ pub async fn run_daemon(config: StartupConfig) -> Result<(), StartupError> {
     let state = Arc::new(AppState::new(config.groups_dir));
 
     // ============================================
-    // 第五步：写入 addr.json
-    // 客户端通过读取此文件获取 socket 路径
+    // 第五步：bind Unix Socket（先于写 addr.json）
+    //
+    // 竞态修复核心：在写 addr.json 之前完成 bind，
+    // 确保客户端读到 addr.json 时 socket 已进入 LISTEN 状态。
+    // bind 失败直接返回错误，不会写 addr.json（保持一致性）。
+    // ============================================
+    let listener = bind_socket(&paths.sock)?;
+
+    // ============================================
+    // 第六步：写入 addr.json
+    // socket 已就绪，客户端现在可以安全连接
+    //
+    // 错误路径保护：如果写入 addr.json 或 PID 失败，
+    // 必须清理已创建的 socket 文件，防止残留 socket 无对应发现文件
     // ============================================
     let pid = std::process::id();
     let sock_path_str = paths.sock.to_string_lossy().to_string();
     let descriptor = AddrDescriptor::new(&sock_path_str, pid, env!("CARGO_PKG_VERSION"));
-    write_addr_descriptor(&paths.addr, &descriptor)?;
+    if let Err(e) = write_addr_descriptor(&paths.addr, &descriptor) {
+        // addr.json 写入失败，清理 socket 文件防止孤儿残留
+        let _ = std::fs::remove_file(&paths.sock);
+        return Err(e.into());
+    }
 
     // ============================================
-    // 第六步：写入 PID 文件
+    // 第七步：写入 PID 文件
     // 供运维工具（如 systemd）查询进程状态
     // ============================================
-    write_pid_file(&paths.pid, pid)?;
+    if let Err(e) = write_pid_file(&paths.pid, pid) {
+        // PID 写入失败，回滚已写入的 addr.json 和 socket 文件
+        let _ = std::fs::remove_file(&paths.addr);
+        let _ = std::fs::remove_file(&paths.sock);
+        return Err(e.into());
+    }
 
     // ============================================
-    // 第七步：设置信号处理
+    // 第八步：设置信号处理
     // SIGTERM/SIGINT 触发优雅关闭
     // ============================================
     {
@@ -128,20 +152,20 @@ pub async fn run_daemon(config: StartupConfig) -> Result<(), StartupError> {
     }
 
     // ============================================
-    // 第八步：启动 serve_forever（阻塞）
-    // 监听 Unix Socket，处理 IPC 请求
+    // 第九步：启动 serve_forever（阻塞）
+    // 传入已绑定的 listener，监听 Unix Socket，处理 IPC 请求
     // serve_forever 在关闭信号触发后返回，并清理 socket 文件
     // ============================================
     let daemon_config = DaemonConfig {
         socket_path: paths.sock.clone(),
     };
 
-    serve_forever(daemon_config, state)
+    serve_forever(listener, daemon_config, state)
         .await
         .map_err(|e| StartupError::Server(e.to_string()))?;
 
     // ============================================
-    // 第九步：退出清理
+    // 第十步：退出清理
     // serve_forever 已清理 socket 文件
     // 清理 addr.json 和 PID 文件
     // ============================================
@@ -149,6 +173,41 @@ pub async fn run_daemon(config: StartupConfig) -> Result<(), StartupError> {
     let _ = std::fs::remove_file(&paths.pid);
 
     Ok(())
+}
+
+/// 绑定 Unix Socket 并设置文件权限
+///
+/// 业务逻辑：
+/// 1. 如有残留 socket 文件先删除（cleanup_stale_files 之后可能仍有残留）
+/// 2. 调用 UnixListener::bind 进入 LISTEN 状态
+/// 3. Unix 平台设置权限为 0o600（仅所有者可读写）
+///
+/// 此函数必须在 write_addr_descriptor 之前调用，
+/// 确保 socket 就绪后才通知客户端。
+///
+/// @param sock_path - socket 文件路径
+/// @return 已绑定的 UnixListener
+fn bind_socket(sock_path: &std::path::Path) -> Result<UnixListener, StartupError> {
+    // 确保不存在残留 socket 文件，bind 前必须清理
+    // cleanup_stale_files 已处理大部分情况，这里作双重保障
+    let _ = std::fs::remove_file(sock_path);
+
+    let listener = UnixListener::bind(sock_path).map_err(|e| {
+        StartupError::Io(std::io::Error::new(
+            e.kind(),
+            format!("bind Unix Socket 失败 {}: {}", sock_path.display(), e),
+        ))
+    })?;
+
+    // 设置 socket 文件权限为 0o600（仅所有者可读写）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(sock_path, perms)?;
+    }
+
+    Ok(listener)
 }
 
 /// 等待系统关闭信号（SIGTERM 或 SIGINT / Ctrl+C）

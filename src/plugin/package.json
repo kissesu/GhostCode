@@ -13,7 +13,8 @@
   },
 "files": [
     "dist",
-    ".claude"
+    ".claude",
+    "bin"
   ],
   "scripts": {
     "build": "tsup",
