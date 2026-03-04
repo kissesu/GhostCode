@@ -1,7 +1,7 @@
 /**
  * @file postinstall.test.ts
  * @description postinstall 脚本单元测试
- *   测试涵盖：CI 环境跳过、正常安装、离线回退、权限错误
+ *   测试涵盖：CI 环境跳过、正常安装、下载失败直接报错、权限错误
  * @author Atlas.oi
  * @date 2026-03-04
  */
@@ -28,7 +28,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { installFromRelease } from "../install.js";
-import { existsSync, readdirSync, copyFileSync, mkdirSync, chmodSync } from "node:fs";
+import { existsSync } from "node:fs";
 
 // 延迟导入 postinstall 模块（需要在 mock 之后）
 // 使用动态导入确保 mock 已生效
@@ -40,10 +40,11 @@ import { existsSync, readdirSync, copyFileSync, mkdirSync, chmodSync } from "nod
 /** 模拟 installFromRelease 的类型 */
 const mockInstallFromRelease = vi.mocked(installFromRelease);
 const mockExistsSync = vi.mocked(existsSync);
-const mockReaddirSync = vi.mocked(readdirSync);
-const mockCopyFileSync = vi.mocked(copyFileSync);
-const mockMkdirSync = vi.mocked(mkdirSync);
-const mockChmodSync = vi.mocked(chmodSync);
+// 以下 mock 保留用于 fallbackToLocalBin 的独立测试（如需要）
+// const mockReaddirSync = vi.mocked(readdirSync);
+// const mockCopyFileSync = vi.mocked(copyFileSync);
+// const mockMkdirSync = vi.mocked(mkdirSync);
+// const mockChmodSync = vi.mocked(chmodSync);
 
 // ============================================
 // 测试套件
@@ -119,69 +120,48 @@ describe("postinstall 脚本", () => {
   });
 
   // ============================================
-  // 测试 3: 下载失败时回退到包内 bin/
+  // 测试 3: 下载失败时直接报错（禁止降级回退）
   // ============================================
-  describe("离线回退机制", () => {
-    it("下载失败时回退到包内 bin/ 目录", async () => {
+  describe("下载失败直接报错", () => {
+    it("installFromRelease 失败时直接输出错误信息，不尝试降级回退", async () => {
       // mock 网络下载失败
       mockInstallFromRelease.mockRejectedValue(new Error("网络连接失败: ECONNREFUSED"));
-
-      // mock 包内 bin/ 目录存在对应二进制
-      mockExistsSync.mockImplementation((p: unknown) => {
-        const pathStr = String(p);
-        // bin/ 目录下的二进制文件存在
-        if (pathStr.includes("bin") && pathStr.includes("ghostcoded")) {
-          return true;
-        }
-        return false;
-      });
-
-      // mock readdirSync 返回包内二进制列表
-      mockReaddirSync.mockReturnValue(["ghostcoded-darwin-arm64"] as unknown as ReturnType<typeof readdirSync>);
-
-      // mock copyFileSync 和 chmodSync 成功
-      mockCopyFileSync.mockImplementation(() => {});
-      mockMkdirSync.mockImplementation(() => undefined);
-      mockChmodSync.mockImplementation(() => {});
-
-      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      const { runPostinstall } = await import("../postinstall.js");
-      await runPostinstall();
-
-      // 验证输出包含回退提示
-      const allOutput = [
-        ...consoleLogSpy.mock.calls.flat(),
-        ...consoleWarnSpy.mock.calls.flat(),
-      ].join(" ");
-      expect(allOutput).toContain("回退");
-
-      consoleLogSpy.mockRestore();
-      consoleWarnSpy.mockRestore();
-    });
-  });
-
-  // ============================================
-  // 测试 4: 下载失败且包内 bin/ 不存在时报错
-  // ============================================
-  describe("双重失败处理", () => {
-    it("下载失败且包内 bin/ 为空时输出明确错误信息", async () => {
-      // mock 网络下载失败
-      mockInstallFromRelease.mockRejectedValue(new Error("网络连接失败"));
-
-      // mock 包内 bin/ 目录为空
-      mockExistsSync.mockReturnValue(false);
-      mockReaddirSync.mockReturnValue([] as unknown as ReturnType<typeof readdirSync>);
 
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
       const { runPostinstall } = await import("../postinstall.js");
       await runPostinstall();
 
-      // 验证输出明确的错误信息（包含安装建议）
+      // 验证输出了错误信息
+      expect(consoleErrorSpy).toHaveBeenCalled();
       const errorOutput = consoleErrorSpy.mock.calls.flat().join(" ");
-      expect(errorOutput.length).toBeGreaterThan(0);
+
+      // 验证错误信息包含失败原因
+      expect(errorOutput).toContain("ECONNREFUSED");
+      // 验证错误信息包含安装失败提示
+      expect(errorOutput).toContain("安装失败");
+      // 验证没有尝试回退（不包含"回退"字样）
+      expect(errorOutput).not.toContain("回退");
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("错误信息包含修复建议：ghostcode doctor 和 GitHub Release 链接", async () => {
+      // mock 网络下载失败
+      mockInstallFromRelease.mockRejectedValue(new Error("连接超时"));
+
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const { runPostinstall } = await import("../postinstall.js");
+      await runPostinstall();
+
+      const errorOutput = consoleErrorSpy.mock.calls.flat().join(" ");
+
+      // 验证包含 ghostcode doctor 修复建议
+      expect(errorOutput).toContain("ghostcode doctor");
+      // 验证包含 GitHub Release 页面链接
+      expect(errorOutput).toContain("github.com");
+      expect(errorOutput).toContain("releases");
 
       consoleErrorSpy.mockRestore();
     });

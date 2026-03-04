@@ -8,8 +8,15 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  // 构建入口：Plugin 主入口
-  entry: ["src/index.ts"],
+  // 构建入口：三个独立入口文件
+  // - index: Plugin 主入口，Claude Code 加载时使用
+  // - cli: CLI 命令行入口，对应 package.json 的 bin 字段
+  // - postinstall: 安装后钩子，对应 package.json 的 postinstall 脚本
+  entry: {
+    index: "src/index.ts",
+    cli: "src/cli.ts",
+    postinstall: "src/postinstall.ts",
+  },
 
   // 输出格式：仅 ESM，不输出 CJS
   format: ["esm"],

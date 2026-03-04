@@ -6,7 +6,7 @@
  * @date 2026-03-04
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
@@ -17,6 +17,9 @@ import { describe, it, expect } from "vitest";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const pkgPath = resolve(__dirname, "../../package.json");
+
+// plugin 根目录，用于检查构建产物
+const pluginRoot = resolve(__dirname, "../..");
 
 describe("package.json 分发产物契约", () => {
   it("files 数组必须包含 bin 目录", () => {
@@ -54,5 +57,29 @@ describe("package.json 分发产物契约", () => {
     const pkg = JSON.parse(raw) as { files?: string[] };
 
     expect(pkg.files).toContain(".claude");
+  });
+});
+
+describe("构建产物完整性验证", () => {
+  // 验证 tsup 构建输出的三个入口文件都存在
+  // 对应 tsup.config.ts 的 entry: { index, cli, postinstall }
+
+  it("dist/index.js 必须存在（Plugin 主入口）", () => {
+    const filePath = resolve(pluginRoot, "dist/index.js");
+    expect(existsSync(filePath)).toBe(true);
+  });
+
+  it("dist/cli.js 必须存在（CLI 命令行入口）", () => {
+    // package.json bin.ghostcode 指向 dist/cli.js
+    // 缺少此文件会导致 npx ghostcode 命令失败
+    const filePath = resolve(pluginRoot, "dist/cli.js");
+    expect(existsSync(filePath)).toBe(true);
+  });
+
+  it("dist/postinstall.js 必须存在（安装后钩子）", () => {
+    // package.json scripts.postinstall 引用 dist/postinstall.js
+    // 缺少此文件会导致 npm install 时 postinstall 脚本失败
+    const filePath = resolve(pluginRoot, "dist/postinstall.js");
+    expect(existsSync(filePath)).toBe(true);
   });
 });

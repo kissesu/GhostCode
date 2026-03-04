@@ -334,7 +334,7 @@ mod tests {
     // 测试 1: all_tool_schemas 返回 16 个工具定义
     // --------------------------------------------------------
     #[test]
-    fn all_schemas_returns_11_tools() {
+    fn all_schemas_returns_16_tools() {
         let schemas = all_tool_schemas();
         assert_eq!(schemas.len(), 16, "必须恰好返回 16 个工具定义");
 

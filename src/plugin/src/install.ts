@@ -37,14 +37,12 @@ const GHOSTCODE_HOME = join(homedir(), ".ghostcode");
 /** Daemon 二进制安装目标路径 */
 const DAEMON_BIN_PATH = join(GHOSTCODE_HOME, "bin", "ghostcoded");
 
-/** MCP 代理二进制安装目标路径 */
-const MCP_BIN_PATH = join(GHOSTCODE_HOME, "bin", "ghostcode-mcp");
 
 /** 安装标记文件路径（记录已安装的版本） */
 const INSTALLED_MARKER_PATH = join(GHOSTCODE_HOME, ".installed");
 
 /** GitHub Release 仓库地址（用于下载 bundle） */
-const GITHUB_REPO = "user/GhostCode";
+const GITHUB_REPO = "kissesu/GhostCode";
 
 // ============================================
 // 类型定义

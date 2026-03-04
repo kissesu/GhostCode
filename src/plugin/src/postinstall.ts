@@ -1,14 +1,13 @@
 /**
  * @file postinstall.ts
  * @description npm/pnpm install 后自动触发的二进制安装脚本
- *              支持 CI 环境检测、GitHub Release 网络下载、离线包内二进制回退
+ *              支持 CI 环境检测、GitHub Release 网络下载
  *
  * 业务流程：
  * 1. 检测 CI 环境 -> 跳过所有下载操作，仅输出提示
  * 2. 尝试 installFromRelease 下载最新版本
- * 3. 网络下载失败 -> 尝试回退到包内 bin/ 预编译二进制
- * 4. 回退也失败 -> 输出明确错误信息和修复建议
- * 5. 权限错误 -> 输出 chmod/sudo 相关提示
+ * 3. 下载失败 -> 输出明确错误信息、失败原因和修复建议
+ * 4. 权限错误 -> 输出 chmod/sudo 相关提示
  *
  * @author Atlas.oi
  * @date 2026-03-04
@@ -219,9 +218,8 @@ function isPermissionError(err: unknown): boolean {
  * 业务逻辑：
  * 1. CI 环境检测 -> 跳过下载
  * 2. installFromRelease 下载最新 bundle
- * 3. 下载失败 -> 回退到包内 bin/
- * 4. 双重失败 -> 输出错误和修复建议
- * 5. 权限错误 -> 输出 chmod/sudo 建议
+ * 3. 下载失败 -> 直接报错，输出失败原因和修复建议（禁止降级回退）
+ * 4. 权限错误 -> 输出 chmod/sudo 建议
  */
 export async function runPostinstall(): Promise<void> {
   // ============================================
@@ -255,50 +253,19 @@ export async function runPostinstall(): Promise<void> {
       return;
     }
 
+    // ============================================
+    // 步骤 3: 下载失败 -> 直接报错，输出明确的失败原因和修复建议
+    // 禁止降级回退策略：问题应该暴露和修复，而不是用回退隐藏
+    // ============================================
     const errMsg = downloadErr instanceof Error ? downloadErr.message : String(downloadErr);
-    console.warn(`[GhostCode] 网络下载失败，尝试回退到包内二进制：${errMsg}`);
-  }
-
-  // ============================================
-  // 步骤 3: 离线回退 - 尝试使用包内 bin/ 二进制
-  // 仅在网络下载失败时触发，不是默认行为
-  // ============================================
-  try {
-    const fallbackSuccess = await fallbackToLocalBin(GHOSTCODE_BIN_DIR);
-
-    if (fallbackSuccess) {
-      console.log("[GhostCode] 回退到包内二进制安装成功");
-      return;
-    }
-
-    // 包内也没有可用的二进制
     console.error(
-      `[GhostCode] 安装失败：网络下载失败且包内无可用二进制\n` +
+      `[GhostCode] 安装失败：无法从 GitHub Release 下载二进制\n` +
+      `  失败原因：${errMsg}\n` +
       `  修复建议：\n` +
-      `    1. 检查网络连接后重新安装：pnpm install\n` +
-      `    2. 手动从 GitHub Release 下载并放置到 ${GHOSTCODE_BIN_DIR}\n` +
-      `    3. 提交 Issue 报告问题`
-    );
-
-  } catch (fallbackErr: unknown) {
-    // 回退也失败（如权限问题）
-    if (isPermissionError(fallbackErr)) {
-      console.error(
-        `[GhostCode] 安装失败：权限不足（回退阶段）\n` +
-        `  修复建议：\n` +
-        `    chmod -R u+w ~/.ghostcode\n` +
-        `    或使用 sudo 安装`
-      );
-      return;
-    }
-
-    const errMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-    console.error(
-      `[GhostCode] 安装失败：所有安装方式均失败\n` +
-      `  错误详情：${errMsg}\n` +
-      `  修复建议：\n` +
-      `    1. 检查网络连接后重新安装：pnpm install\n` +
-      `    2. 手动从 GitHub Release 下载并放置到 ${GHOSTCODE_BIN_DIR}`
+      `    1. 运行 ghostcode doctor 诊断问题\n` +
+      `    2. 检查网络连接后重新安装：pnpm install\n` +
+      `    3. 手动从 GitHub Release 下载并放置到 ${GHOSTCODE_BIN_DIR}\n` +
+      `       https://github.com/kissesu/GhostCode/releases`
     );
   }
 }

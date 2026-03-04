@@ -92,7 +92,7 @@ describe("buildReleaseAssetUrl - URL 生成", () => {
 
     // 验证 URL 格式符合 GitHub Release 规范
     expect(url).toBe(
-      `https://github.com/user/GhostCode/releases/download/v${version}/ghostcode-darwin-arm64.tar.gz`
+      `https://github.com/kissesu/GhostCode/releases/download/v${version}/ghostcode-darwin-arm64.tar.gz`
     );
   });
 
@@ -101,7 +101,7 @@ describe("buildReleaseAssetUrl - URL 生成", () => {
     const url = buildReleaseAssetUrl(version, "darwin", "x64");
 
     expect(url).toBe(
-      `https://github.com/user/GhostCode/releases/download/v${version}/ghostcode-darwin-x64.tar.gz`
+      `https://github.com/kissesu/GhostCode/releases/download/v${version}/ghostcode-darwin-x64.tar.gz`
     );
   });
 
@@ -110,7 +110,7 @@ describe("buildReleaseAssetUrl - URL 生成", () => {
     const url = buildReleaseAssetUrl(version, "linux", "x64");
 
     expect(url).toBe(
-      `https://github.com/user/GhostCode/releases/download/v${version}/ghostcode-linux-x64.tar.gz`
+      `https://github.com/kissesu/GhostCode/releases/download/v${version}/ghostcode-linux-x64.tar.gz`
     );
   });
 });

@@ -100,13 +100,27 @@ mkdir -p "$OUTPUT_DIR/.claude"
 # ============================================
 echo "第二步：复制 TypeScript 产物..."
 
-if [[ ! -f "$TS_DIST/index.js" ]]; then
-  echo "错误: 缺少 TypeScript 产物: $TS_DIST/index.js" >&2
-  exit 1
-fi
+# 验证三个必须的 JS 入口文件存在
+for entry in index.js cli.js postinstall.js; do
+  if [[ ! -f "$TS_DIST/$entry" ]]; then
+    echo "错误: 缺少 TypeScript 产物: $TS_DIST/$entry" >&2
+    echo "      请先运行 pnpm --dir src/plugin run build" >&2
+    exit 1
+  fi
+done
 
+# 复制三个入口文件
 cp "$TS_DIST/index.js" "$OUTPUT_DIR/dist/index.js"
-echo "  复制: dist/index.js"
+cp "$TS_DIST/cli.js" "$OUTPUT_DIR/dist/cli.js"
+cp "$TS_DIST/postinstall.js" "$OUTPUT_DIR/dist/postinstall.js"
+echo "  复制: dist/index.js, dist/cli.js, dist/postinstall.js"
+
+# 复制类型声明（如存在）
+for dts in "$TS_DIST"/*.d.ts; do
+  if [[ -f "$dts" ]]; then
+    cp "$dts" "$OUTPUT_DIR/dist/"
+  fi
+done
 
 # ============================================
 # 第三步：复制二进制文件
@@ -166,6 +180,12 @@ cat > "$OUTPUT_DIR/package.json" << EOF
   "description": "GhostCode - 多 Agent 协作开发平台 Claude Code Plugin",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "ghostcode": "dist/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node dist/postinstall.js"
+  },
   "files": [
     "dist",
     "bin",
@@ -185,7 +205,7 @@ cat > "$OUTPUT_DIR/package.json" << EOF
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ghostcode/ghostcode.git"
+    "url": "https://github.com/kissesu/GhostCode.git"
   }
 }
 EOF
