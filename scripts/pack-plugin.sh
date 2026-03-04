@@ -4,9 +4,24 @@
 # 将三平台 Rust 二进制 + TypeScript 编译产物 + 配置文件
 # 组装为符合 Claude Code Plugin 规范的 npm 包目录。
 #
+# 架构拓扑说明（混合架构）：
+#   - Node.js Extension（dist/index.js）：处理 Claude Code Hooks，
+#     负责 Magic Keywords、HUD 状态栏、用户交互层等 Plugin 功能
+#   - Rust MCP Server（bin/ghostcode-mcp）：通过 stdio JSON-RPC 2.0
+#     与 Claude Code 通信，提供多 Agent 协作工具能力，连接 Daemon
+#   - Rust Daemon（bin/ghostcoded-*）：后台守护进程，管理 Agent 生命周期、
+#     消息投递、Session Lease 等核心引擎功能
+#
+# 启动拓扑：
+#   Claude Code
+#     ├── Extension (Node.js)  →  dist/index.js         [Hooks 处理]
+#     └── MCP Server (Rust)    →  bin/ghostcode-mcp     [工具能力]
+#                                      ↓ Unix Socket
+#                              Daemon (bin/ghostcoded-*)  [核心引擎]
+#
 # 用法:
 #   bash scripts/pack-plugin.sh \
-#     --binaries-dir <path>   二进制文件所在目录
+#     --binaries-dir <path>   二进制文件所在目录（含 ghostcode-mcp 和 ghostcoded-* 二进制）
 #     --ts-dist <path>        TypeScript 编译产物目录（tsup 输出）
 #     --version <semver>      版本号（如 0.1.0，不含 v 前缀）
 #     --output <path>         输出目录（默认 ghostcode-plugin/）
@@ -17,14 +32,15 @@
 #     dist/
 #       index.js
 #     bin/
-#       ghostcoded-darwin-arm64
-#       ghostcoded-darwin-x64
-#       ghostcoded-linux-x64
+#       ghostcode-mcp              # MCP Server（Rust，stdio JSON-RPC）
+#       ghostcoded-darwin-arm64    # Daemon（macOS Apple Silicon）
+#       ghostcoded-darwin-x64      # Daemon（macOS Intel）
+#       ghostcoded-linux-x64       # Daemon（Linux x86_64）
 #     .claude/
 #       settings.json
 #
 # @author Atlas.oi
-# @date 2026-03-02
+# @date 2026-03-04
 
 set -euo pipefail
 
@@ -93,29 +109,48 @@ cp "$TS_DIST/index.js" "$OUTPUT_DIR/dist/index.js"
 echo "  复制: dist/index.js"
 
 # ============================================
-# 第三步：复制三平台二进制
+# 第三步：复制二进制文件
+# 包含两类二进制：
+#   1. ghostcode-mcp — MCP Server，通过 stdio 与 Claude Code 通信
+#      作为 MCP server 注册到 .claude/settings.json
+#   2. ghostcoded-* — 三平台 Daemon，被 ghostcode-mcp 通过 Unix Socket 调用
 # 每个二进制复制后设置可执行权限
 # ============================================
-echo "第三步：复制三平台二进制..."
+echo "第三步：复制二进制文件..."
 
-BINARIES=(
+# MCP Server 二进制（单一跨平台版本，作为 settings.json 的 MCP server command）
+MCP_SERVER_BIN="ghostcode-mcp"
+MCP_SERVER_SRC="$BINARIES_DIR/$MCP_SERVER_BIN"
+MCP_SERVER_DST="$OUTPUT_DIR/bin/$MCP_SERVER_BIN"
+
+if [[ ! -f "$MCP_SERVER_SRC" ]]; then
+  echo "错误: 缺少 MCP Server 二进制: $MCP_SERVER_SRC" >&2
+  exit 1
+fi
+
+cp "$MCP_SERVER_SRC" "$MCP_SERVER_DST"
+chmod +x "$MCP_SERVER_DST"
+echo "  复制: bin/$MCP_SERVER_BIN (MCP Server)"
+
+# Daemon 三平台二进制（后台守护进程，管理 Agent 生命周期）
+DAEMON_BINARIES=(
   "ghostcoded-darwin-arm64"
   "ghostcoded-darwin-x64"
   "ghostcoded-linux-x64"
 )
 
-for bin in "${BINARIES[@]}"; do
+for bin in "${DAEMON_BINARIES[@]}"; do
   src="$BINARIES_DIR/$bin"
   dst="$OUTPUT_DIR/bin/$bin"
 
   if [[ ! -f "$src" ]]; then
-    echo "错误: 缺少二进制文件: $src" >&2
+    echo "错误: 缺少 Daemon 二进制文件: $src" >&2
     exit 1
   fi
 
   cp "$src" "$dst"
   chmod +x "$dst"
-  echo "  复制: bin/$bin"
+  echo "  复制: bin/$bin (Daemon)"
 done
 
 # ============================================
@@ -159,7 +194,16 @@ echo "  生成: package.json"
 # ============================================
 # 第五步：生成 .claude/settings.json
 # Claude Code Plugin 配置文件
-# 声明 Plugin 元信息和 MCP server 配置
+#
+# 混合架构配置说明：
+#   - mcpServers.ghostcode：注册 Rust MCP Server 二进制
+#     command 指向 bin/ghostcode-mcp（相对于插件安装目录）
+#     该二进制通过 stdio 实现 JSON-RPC 2.0 与 Claude Code 通信
+#     内部通过 Unix Socket 连接后台 Daemon
+#
+#   注意：Node.js Extension（dist/index.js）作为 Claude Code Plugin
+#   的 extension 入口自动加载，无需在 settings.json 中单独注册，
+#   其职责为 Hooks 处理（Magic Keywords、HUD 状态栏等 UI 层功能）
 # ============================================
 echo "第五步：生成 .claude/settings.json..."
 
@@ -167,10 +211,9 @@ cat > "$OUTPUT_DIR/.claude/settings.json" << EOF
 {
   "mcpServers": {
     "ghostcode": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["dist/index.js"],
-      "description": "GhostCode 多 Agent 协作开发平台"
+      "command": "./bin/ghostcode-mcp",
+      "args": ["--base-dir", "\${HOME}/.ghostcode"],
+      "description": "GhostCode 多 Agent 协作开发平台 MCP Server"
     }
   }
 }
@@ -185,6 +228,7 @@ echo "第六步：验证包结构..."
 REQUIRED_FILES=(
   "package.json"
   "dist/index.js"
+  "bin/ghostcode-mcp"
   "bin/ghostcoded-darwin-arm64"
   "bin/ghostcoded-darwin-x64"
   "bin/ghostcoded-linux-x64"

@@ -2,15 +2,16 @@
 #
 # 触发条件：推送 v* tag（如 v0.1.0）
 # 步骤：
-#   1. build-binaries — 矩阵并行构建三平台 Rust 二进制
-#   2. package        — 下载二进制 + 编译 TS + 组装 Plugin 包
-#   3. publish        — 创建 GitHub Release + 发布 npm 包
+#   1. build-binaries    — 矩阵并行构建三平台双 Rust 二进制（ghostcoded + ghostcode-mcp）
+#   2. package-bundles   — 下载六个原始二进制，组装平台 bundle + 生成 SHA256SUMS
+#   3. package           — 编译 TS + 组装 Plugin npm 包
+#   4. publish           — 创建 GitHub Release（上传原始二进制 + bundle + SHA256SUMS）+ 发布 npm 包
 #
 # 所需 Secrets:
 #   NPM_TOKEN — npm 发布 token（Settings > Secrets > Actions）
 #
 # @author Atlas.oi
-# @date 2026-03-02
+# @date 2026-03-04
 
 name: Release
 
@@ -27,8 +28,8 @@ env:
 jobs:
   # ============================================================
   # job: build-binaries（矩阵）
-  # 三平台并行构建 ghostcode-daemon 二进制
-  # 注意：Cargo.toml 无 [[bin]] section，二进制名默认等于包名
+  # 三平台并行构建双二进制：ghostcode-daemon (ghostcoded) + ghostcode-mcp
+  # 每个矩阵 job 同时构建两个包，产出六个原始二进制（三平台各两个）
   # ============================================================
   build-binaries:
     name: 构建 ${{ matrix.target }}
@@ -41,17 +42,17 @@ jobs:
           # macOS ARM（Apple Silicon）
           - target: aarch64-apple-darwin
             runner: macos-latest
-            binary_name: ghostcoded-darwin-arm64
+            platform: darwin-arm64
 
           # macOS Intel（GitHub 提供的 Intel runner 是 macos-13）
           - target: x86_64-apple-darwin
             runner: macos-13
-            binary_name: ghostcoded-darwin-x64
+            platform: darwin-x64
 
           # Linux x64（原生构建）
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            binary_name: ghostcoded-linux-x64
+            platform: linux-x64
 
     steps:
       - name: 检出代码
@@ -70,31 +71,110 @@ jobs:
           # 区分不同 target 的缓存
           key: ${{ matrix.target }}
 
-      # release 模式构建 ghostcode-daemon 二进制
-      # --target 指定交叉编译目标
-      # -p ghostcode-daemon 只编译 daemon 包
-      - name: cargo build --release
+      # ============================================================
+      # 构建 ghostcode-daemon 二进制（ghostcoded）
+      # release 模式，-p 指定只编译 daemon 包
+      # ============================================================
+      - name: cargo build --release ghostcode-daemon
         run: cargo build --release --target ${{ matrix.target }} -p ghostcode-daemon
 
-      # 重命名二进制为包含平台信息的名称
-      # Cargo.toml 无 [[bin]] section，二进制名默认为包名 ghostcode-daemon
-      - name: 重命名二进制
+      # ============================================================
+      # 构建 ghostcode-mcp 二进制
+      # release 模式，-p 指定只编译 mcp 包
+      # 缺失此二进制时整个 job 失败，上游构建终止
+      # ============================================================
+      - name: cargo build --release ghostcode-mcp
+        run: cargo build --release --target ${{ matrix.target }} -p ghostcode-mcp
+
+      # ============================================================
+      # 将两个二进制重命名为含平台信息的名称，准备上传
+      # 文件命名格式：ghostcoded-{target} / ghostcode-mcp-{target}
+      # ============================================================
+      - name: 重命名二进制（含平台信息）
         shell: bash
         run: |
-          cp target/${{ matrix.target }}/release/ghostcode-daemon \
-             ${{ matrix.binary_name }}
+          cp target/${{ matrix.target }}/release/ghostcoded \
+             ghostcoded-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/ghostcode-mcp \
+             ghostcode-mcp-${{ matrix.target }}
 
-      # 上传二进制为 artifact，供 package job 汇总
+      # 上传两个二进制为 artifact，供 package-bundles job 汇总
       - name: 上传二进制 artifact
         uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
-          path: ${{ matrix.binary_name }}
+          path: |
+            ghostcoded-${{ matrix.target }}
+            ghostcode-mcp-${{ matrix.target }}
           retention-days: 1
 
   # ============================================================
+  # job: package-bundles
+  # 下载六个原始二进制，组装平台 bundle + 生成 SHA256SUMS
+  # ============================================================
+  package-bundles:
+    name: 组装平台 Bundle
+    runs-on: ubuntu-latest
+    needs: build-binaries
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 下载三平台六个二进制 artifact
+      - name: 下载所有二进制 artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: assets/
+
+      # ============================================================
+      # 验证六个二进制均已下载
+      # 缺失 ghostcode-mcp 时立即失败，不允许继续组装
+      # ============================================================
+      - name: 验证六个原始二进制完整性
+        run: |
+          ls -la assets/
+          # 验证 ghostcoded 三平台
+          test -f assets/ghostcoded-aarch64-apple-darwin    || (echo "缺少 ghostcoded aarch64-apple-darwin 二进制" && exit 1)
+          test -f assets/ghostcoded-x86_64-apple-darwin     || (echo "缺少 ghostcoded x86_64-apple-darwin 二进制" && exit 1)
+          test -f assets/ghostcoded-x86_64-unknown-linux-gnu || (echo "缺少 ghostcoded x86_64-unknown-linux-gnu 二进制" && exit 1)
+          # 验证 ghostcode-mcp 三平台（缺失时构建必须失败）
+          test -f assets/ghostcode-mcp-aarch64-apple-darwin    || (echo "缺少 ghostcode-mcp aarch64-apple-darwin 二进制，ghostcode-mcp 是核心组件，构建终止" && exit 1)
+          test -f assets/ghostcode-mcp-x86_64-apple-darwin     || (echo "缺少 ghostcode-mcp x86_64-apple-darwin 二进制，ghostcode-mcp 是核心组件，构建终止" && exit 1)
+          test -f assets/ghostcode-mcp-x86_64-unknown-linux-gnu || (echo "缺少 ghostcode-mcp x86_64-unknown-linux-gnu 二进制，ghostcode-mcp 是核心组件，构建终止" && exit 1)
+          echo "六个原始二进制验证通过"
+
+      # 赋予脚本执行权限
+      - name: 赋予构建脚本执行权限
+        run: |
+          chmod +x scripts/build-release-assets.sh
+          chmod +x scripts/release-checksums.sh
+
+      # 调用组装脚本，将双二进制打包为平台 bundle
+      - name: 组装平台 bundle
+        run: bash scripts/build-release-assets.sh assets/
+
+      # 生成 SHA256SUMS 覆盖所有 bundle
+      - name: 生成 SHA256SUMS
+        run: bash scripts/release-checksums.sh assets/
+
+      # 上传组装结果（原始二进制 + bundle + SHA256SUMS）
+      - name: 上传 bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundles
+          path: |
+            assets/ghostcoded-*
+            assets/ghostcode-mcp-*
+            assets/ghostcode-*.tar.gz
+            assets/ghostcode_SHA256SUMS
+          retention-days: 7
+
+  # ============================================================
   # job: package
-  # 下载三平台二进制 + 编译 TS + 组装 Plugin npm 包
+  # 编译 TS + 组装 Plugin npm 包
   # ============================================================
   package:
     name: 打包 Plugin
@@ -117,7 +197,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
           run_install: false
 
-      # 下载三平台二进制 artifact
+      # 下载三平台二进制 artifact（Plugin 包内只需 ghostcoded）
       - name: 下载所有二进制 artifact
         uses: actions/download-artifact@v4
         with:
@@ -125,13 +205,13 @@ jobs:
           merge-multiple: true
           path: binaries/
 
-      # 验证三个二进制均已下载
-      - name: 验证二进制文件
+      # 验证三个 ghostcoded 二进制均已下载
+      - name: 验证 ghostcoded 二进制文件
         run: |
           ls -la binaries/
-          test -f binaries/ghostcoded-darwin-arm64 || (echo "缺少 darwin-arm64 二进制" && exit 1)
-          test -f binaries/ghostcoded-darwin-x64   || (echo "缺少 darwin-x64 二进制" && exit 1)
-          test -f binaries/ghostcoded-linux-x64    || (echo "缺少 linux-x64 二进制" && exit 1)
+          test -f binaries/ghostcoded-aarch64-apple-darwin    || (echo "缺少 darwin-arm64 ghostcoded 二进制" && exit 1)
+          test -f binaries/ghostcoded-x86_64-apple-darwin     || (echo "缺少 darwin-x64 ghostcoded 二进制" && exit 1)
+          test -f binaries/ghostcoded-x86_64-unknown-linux-gnu || (echo "缺少 linux-x64 ghostcoded 二进制" && exit 1)
 
       # 安装 TS 依赖并编译
       - name: pnpm install
@@ -161,9 +241,9 @@ jobs:
           find ghostcode-plugin/ -type f | sort
           test -f ghostcode-plugin/package.json          || (echo "缺少 package.json" && exit 1)
           test -f ghostcode-plugin/dist/index.js         || (echo "缺少 dist/index.js" && exit 1)
-          test -f ghostcode-plugin/bin/ghostcoded-darwin-arm64 || (echo "缺少 darwin-arm64 二进制" && exit 1)
-          test -f ghostcode-plugin/bin/ghostcoded-darwin-x64   || (echo "缺少 darwin-x64 二进制" && exit 1)
-          test -f ghostcode-plugin/bin/ghostcoded-linux-x64    || (echo "缺少 linux-x64 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-aarch64-apple-darwin    || (echo "缺少 darwin-arm64 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-x86_64-apple-darwin     || (echo "缺少 darwin-x64 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-x86_64-unknown-linux-gnu || (echo "缺少 linux-x64 二进制" && exit 1)
           test -f ghostcode-plugin/.claude/settings.json        || (echo "缺少 .claude/settings.json" && exit 1)
 
       # 打包为 .tgz 用于 Release 附件
@@ -189,12 +269,12 @@ jobs:
 
   # ============================================================
   # job: publish
-  # 创建 GitHub Release + 发布 npm 包
+  # 创建 GitHub Release（上传全部产物）+ 发布 npm 包
   # ============================================================
   publish:
     name: 发布
     runs-on: ubuntu-latest
-    needs: package
+    needs: [package-bundles, package]
     permissions:
       contents: write
 
@@ -209,12 +289,11 @@ jobs:
           name: plugin-package
           path: release-assets/
 
-      # 下载三平台独立二进制用于 Release 附件
-      - name: 下载所有二进制
+      # 下载 bundle artifact（原始二进制 + platform bundle + SHA256SUMS）
+      - name: 下载 Release bundle 产物
         uses: actions/download-artifact@v4
         with:
-          pattern: binary-*
-          merge-multiple: true
+          name: release-bundles
           path: release-assets/
 
       # 下载 Plugin 目录（用于 npm publish）
@@ -224,8 +303,20 @@ jobs:
           name: plugin-dir
           path: ghostcode-plugin/
 
+      # 列出所有 Release 附件，便于验证
+      - name: 列出 Release 附件
+        run: |
+          echo "Release 附件列表："
+          ls -lh release-assets/
+
+      # ============================================================
       # 创建 GitHub Release
-      # softprops/action-gh-release 是社区广泛使用的方案
+      # 上传内容：
+      #   - 六个原始二进制（ghostcoded-* + ghostcode-mcp-*，三平台）
+      #   - 三个平台 bundle（ghostcode-*.tar.gz）
+      #   - SHA256SUMS 校验文件（ghostcode_SHA256SUMS）
+      #   - Plugin npm 包（*.tgz）
+      # ============================================================
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -21,7 +21,11 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "node dist/postinstall.js"
+  },
+  "bin": {
+    "ghostcode": "dist/cli.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
