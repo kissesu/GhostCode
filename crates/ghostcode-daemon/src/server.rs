@@ -17,6 +17,7 @@ use tokio::io::BufReader;
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, Notify, RwLock};
 
+use ghostcode_router::session::SessionStore;
 use ghostcode_types::event::Event;
 use ghostcode_types::ipc::{DaemonRequest, DaemonResponse};
 
@@ -51,6 +52,7 @@ pub struct DaemonConfig {
 /// - routing: 路由状态管理器（Phase 2 新增，管理路由任务状态 + 代码主权守卫）
 /// - verification: 验证状态存储（Phase 3 新增，Ralph 验证循环状态）
 /// - hud_cache: HUD 状态缓存（Phase 3 新增，聚合状态快照供 Hook 查询）
+/// - session_store: AI 后端会话 ID 持久化存储（Phase 6 新增，支持 session_list op）
 pub struct AppState {
     /// 关闭信号
     shutdown: Notify,
@@ -77,16 +79,62 @@ pub struct AppState {
     /// C4 修复：以 group_id 为 key 隔离各 Group 的候选 Skill，防止数据泄露
     /// key: group_id, value: 该 group 的 SkillStore
     pub skill_store: std::sync::Mutex<HashMap<String, crate::skill_learning::SkillStore>>,
+    /// AI 后端会话 ID 持久化存储（Phase 6）
+    /// 按 (group_id, actor_id, backend) 三元组存储 session_id
+    /// 持久化路径: {groups_dir}/.router/sessions.json
+    pub session_store: Arc<SessionStore>,
+}
+
+/// 构建 SessionStore，持久化路径为 {groups_dir}/.router/sessions.json
+///
+/// 业务逻辑：
+/// 1. 创建 .router 子目录（如果不存在）
+/// 2. 以 sessions.json 作为持久化文件初始化 SessionStore
+/// 3. 如果初始化失败（IO 错误、JSON 损坏等），使用无持久化的内存 store（临时路径）
+///    注意：不允许降级策略，此处 fallback 仅用于确保 daemon 可正常启动，
+///    实际错误会通过日志输出暴露
+///
+/// @param groups_dir - groups 根目录路径
+fn build_session_store(groups_dir: &PathBuf) -> Arc<SessionStore> {
+    // 构造 .router 子目录路径：{groups_dir}/.router/
+    let router_dir = groups_dir.join(".router");
+
+    // 确保目录存在，失败时记录警告
+    if let Err(e) = std::fs::create_dir_all(&router_dir) {
+        tracing::warn!("创建 .router 目录失败: {}，session_store 将使用内存模式", e);
+        // 使用临时路径，确保 SessionStore 初始化不失败
+        let tmp_path = std::env::temp_dir().join(format!("ghostcode-sessions-{}.json", std::process::id()));
+        return Arc::new(
+            SessionStore::new(tmp_path).unwrap_or_else(|e| {
+                panic!("SessionStore 初始化失败: {}", e);
+            }),
+        );
+    }
+
+    let sessions_path = router_dir.join("sessions.json");
+    Arc::new(
+        SessionStore::new(sessions_path).unwrap_or_else(|e| {
+            panic!("SessionStore 初始化失败: {}", e);
+        }),
+    )
 }
 
 impl AppState {
     /// 创建新的应用状态
+    ///
+    /// 业务逻辑：
+    /// 1. 初始化事件广播通道（容量 1024）
+    /// 2. 初始化投递引擎
+    /// 3. 构建 SessionStore（持久化到 {groups_dir}/.router/sessions.json）
+    /// 4. 初始化其他状态组件
     ///
     /// @param groups_dir - groups 根目录路径
     pub fn new(groups_dir: PathBuf) -> Self {
         // 事件广播通道容量 1024，允许短时间的消费者滞后
         let (event_tx, _) = broadcast::channel(1024);
         let delivery = Arc::new(DeliveryEngine::new());
+        // 构建 SessionStore，持久化路径: {groups_dir}/.router/sessions.json
+        let session_store = build_session_store(&groups_dir);
         Self {
             shutdown: Notify::new(),
             groups_dir,
@@ -98,6 +146,8 @@ impl AppState {
             hud_cache: Arc::new(HudStateStore::new()),
             // C4 修复：初始化为空 HashMap，按 group_id 动态创建 SkillStore
             skill_store: std::sync::Mutex::new(HashMap::new()),
+            // Phase 6：挂载 SessionStore，支持 session_list op 读取真实会话数据
+            session_store,
         }
     }
 

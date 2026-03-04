@@ -1,14 +1,18 @@
 // @file process.rs
 // @description 异步子进程管理器，封装 tokio::process::Command 启动/监控/终止 AI CLI 工具
 //              支持 stdin 传递长文本、超时控制、取消令牌终止、stdout 逐行捕获
+//              集成执行期主权约束：spawn 前调用 enforce_execution 阻断非 Claude 写入操作
 //              参考: ccg-workflow/codeagent-wrapper/executor.go - 进程执行和 stdin pipe 逻辑
 // @author Atlas.oi
-// @date 2026-03-02
+// @date 2026-03-04
 
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
+
+// 引入执行期主权约束函数
+use crate::sovereignty::{enforce_execution, SovereigntyViolation};
 
 // ============================================================
 // 公开类型定义
@@ -42,6 +46,9 @@ pub enum ProcessError {
     /// IO 错误（进程启动失败等）
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
+    /// 执行期主权约束违规：非 Claude 后端尝试写入操作
+    #[error("主权约束违规: {0}")]
+    SovereigntyViolation(#[from] SovereigntyViolation),
 }
 
 // ============================================================
@@ -82,7 +89,7 @@ pub fn should_use_stdin(text: &str) -> bool {
 pub struct ProcessManager;
 
 impl ProcessManager {
-    /// 执行命令并等待结果（测试友好接口）
+    /// 执行命令并等待结果（向后兼容接口，以 "claude" 身份执行）
     ///
     /// 业务逻辑：
     /// 1. 启动子进程，设置 stdin/stdout/stderr 管道
@@ -90,6 +97,9 @@ impl ProcessManager {
     /// 3. 在 tokio::select! 中同时等待：进程完成 / 超时 / 取消令牌
     /// 4. 取消时发送 SIGTERM，等待 5s 后发 SIGKILL
     /// 5. 退出码非零时返回 ProcessFailed 错误
+    ///
+    /// 注意：此接口以 "claude" 身份绕过主权检查（历史兼容），
+    ///       新代码应优先使用 run_command_as() 以明确指定后端。
     ///
     /// @param command - 可执行文件名称
     /// @param args - 命令行参数列表
@@ -105,7 +115,46 @@ impl ProcessManager {
         timeout: Duration,
         cancel: CancellationToken,
     ) -> Result<ProcessOutput, ProcessError> {
+        // 向后兼容：以 "claude" 身份执行（executor.rs 历史调用路径）
+        Self::run_command_as("claude", command, args, stdin_data, timeout, cancel).await
+    }
+
+    /// 执行命令并等待结果（带主权约束的主接口）
+    ///
+    /// 业务逻辑：
+    /// 0. 执行期主权约束检查（enforce_execution）：非 Claude 后端的写入操作在此阶段拦截
+    /// 1. 启动子进程，设置 stdin/stdout/stderr 管道
+    /// 2. 如果提供了 stdin_data，通过 stdin pipe 写入后关闭
+    /// 3. 在 tokio::select! 中同时等待：进程完成 / 超时 / 取消令牌
+    /// 4. 取消时发送 SIGTERM，等待 5s 后发 SIGKILL
+    /// 5. 退出码非零时返回 ProcessFailed 错误
+    ///
+    /// @param backend_name - 发起命令的后端名称（用于主权约束检查，如 "claude"/"codex"）
+    /// @param command - 可执行文件名称
+    /// @param args - 命令行参数列表
+    /// @param stdin_data - 可选的 stdin 数据（None 则不提供 stdin）
+    /// @param timeout - 超时时间，超时后强制终止进程
+    /// @param cancel - 取消令牌，触发后 SIGTERM → 5s → SIGKILL
+    /// @returns Ok(ProcessOutput) - 成功执行的结果
+    /// @returns Err(ProcessError) - 主权违规/超时/取消/失败/IO 错误
+    pub async fn run_command_as(
+        backend_name: &str,
+        command: &str,
+        args: &[&str],
+        stdin_data: Option<&str>,
+        timeout: Duration,
+        cancel: CancellationToken,
+    ) -> Result<ProcessOutput, ProcessError> {
         let start = std::time::Instant::now();
+
+        // ============================================
+        // 第零步：执行期主权约束检查
+        // 在创建任何系统进程之前，验证该后端是否有权执行该命令。
+        // 非 Claude 后端的写入型命令在此阶段直接拒绝，不创建子进程。
+        // 将 &[&str] args 转换为 Vec<String> 以匹配 enforce_execution 接口
+        // ============================================
+        let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        enforce_execution(backend_name, command, &args_owned)?;
 
         // ============================================
         // 第一步：构建并启动子进程

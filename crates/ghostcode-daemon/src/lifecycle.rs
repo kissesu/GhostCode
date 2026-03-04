@@ -21,6 +21,7 @@ use ghostcode_types::event::{Event, EventKind};
 
 use crate::actor_mgmt::find_actor;
 use crate::group::{list_groups, load_group};
+use crate::recovery::{on_actor_exit, RecoveryAction};
 use crate::runner::{HeadlessSession, HeadlessState, HeadlessStatus, LifecycleError};
 use crate::server::AppState;
 
@@ -318,4 +319,50 @@ pub fn spawn_heartbeat_monitor(state: Arc<AppState>, timeout_secs: u64) {
             }
         }
     });
+}
+
+/// Actor 退出事件处理（供外部调用）
+///
+/// 当 Actor 进程异常退出时调用，返回受控的恢复动作。
+/// 调用方根据 RecoveryAction 决定后续操作：
+/// - Restart → 重新调用 start_actor
+/// - MarkFailed → 更新 group.yaml actor.running = false，记录账本事件
+/// - Cleaned → 无需进一步操作
+///
+/// 业务逻辑：
+/// 1. 委托 recovery::on_actor_exit 决策恢复动作
+/// 2. 将决策日志写入 tracing（供可观测性系统消费）
+///
+/// @param actor_id - Actor 标识符
+/// @param exit_code - 退出码（进程正常退出时有值）
+/// @param signal - 终止信号编号（被信号终止时有值）
+/// @return RecoveryAction 恢复动作
+pub fn handle_actor_exit(actor_id: &str, exit_code: Option<i32>, signal: Option<i32>) -> RecoveryAction {
+    let action = on_actor_exit(actor_id, exit_code, signal);
+
+    // 记录决策日志（供可观测性系统消费）
+    match &action {
+        RecoveryAction::Restart => {
+            tracing::info!(
+                actor_id = actor_id,
+                exit_code = ?exit_code,
+                signal = ?signal,
+                "Actor 异常退出，恢复决策: Restart"
+            );
+        }
+        RecoveryAction::MarkFailed { reason } => {
+            tracing::warn!(
+                actor_id = actor_id,
+                exit_code = ?exit_code,
+                signal = ?signal,
+                reason = reason.as_str(),
+                "Actor 异常退出，恢复决策: MarkFailed"
+            );
+        }
+        RecoveryAction::Cleaned => {
+            tracing::debug!(actor_id = actor_id, "Actor 退出，恢复决策: Cleaned");
+        }
+    }
+
+    action
 }

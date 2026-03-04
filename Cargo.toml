@@ -15,6 +15,7 @@ members = [
     "crates/ghostcode-mcp",
     "crates/ghostcode-router",
     "crates/ghostcode-web",
+    "crates/ghostcode-config",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ authors = ["Atlas.oi"]
 [workspace.dependencies]
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 
 # 序列化
 serde = { version = "1", features = ["derive"] }
@@ -59,6 +61,9 @@ proptest = "1"
 
 # YAML 配置序列化
 serde_yaml = "0.9"
+
+# TOML 配置解析（ghostcode-config 使用）
+toml = "0.8"
 
 # 测试用临时目录
 tempfile = "3"

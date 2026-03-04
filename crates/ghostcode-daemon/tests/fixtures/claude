@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# @file claude
+# @description Fake claude CLI，用于集成测试
+#              输出与真实 claude --output-format stream-json 兼容的 JSON stream
+#              通过环境变量 FAKE_CLAUDE_FAIL=1 控制是否失败
+#              session_id 固定为 "fake-claude-session-001"
+# @author Atlas.oi
+# @date 2026-03-04
+
+# 通过环境变量控制失败行为，避免使用多个脚本导致 PATH 竞争
+if [ "${FAKE_CLAUDE_FAIL:-0}" = "1" ]; then
+    printf 'error: fake claude failure\n' >&2
+    exit 1
+fi
+
+# 模拟 Claude stream-json 格式的输出：
+# 1. subtype 事件（Progress）
+# 2. result 事件（AgentMessage，包含 session_id）
+printf '{"type":"system","subtype":"init","session_id":"fake-claude-session-001"}\n'
+printf '{"type":"result","result":"fake claude output","session_id":"fake-claude-session-001"}\n'
+exit 0

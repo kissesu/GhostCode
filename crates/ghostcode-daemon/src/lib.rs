@@ -23,3 +23,5 @@ pub mod verification;
 pub mod hud;
 pub mod skill_learning;
 pub mod dashboard;
+pub mod recovery;
+pub mod diagnostics;

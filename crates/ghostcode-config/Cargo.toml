@@ -1,0 +1,18 @@
+# ghostcode-config crate 配置
+# 四层 TOML 配置分层系统
+#
+# @author Atlas.oi
+# @date 2026-03-04
+
+[package]
+name = "ghostcode-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

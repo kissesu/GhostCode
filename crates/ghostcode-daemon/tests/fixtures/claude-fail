@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# @file claude-fail
+# @description Fake claude CLI（失败版本），用于集成测试失败场景
+#              输出一行错误后以非零退出码退出
+# @author Atlas.oi
+# @date 2026-03-04
+
+printf 'error: fake claude failure\n' >&2
+exit 1
