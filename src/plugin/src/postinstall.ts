@@ -13,15 +13,7 @@
  * @date 2026-03-04
  */
 
-import {
-  existsSync,
-  readdirSync,
-  copyFileSync,
-  mkdirSync,
-  chmodSync,
-  unlinkSync,
-} from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
 
@@ -63,7 +55,7 @@ export function isCIEnvironment(): boolean {
 }
 
 // ============================================
-// 包内二进制回退逻辑
+// 版本读取
 // ============================================
 
 /**
@@ -79,113 +71,6 @@ function readPluginVersion(): string {
   } catch {
     return "unknown";
   }
-}
-
-/**
- * 根据当前系统平台确定对应的预编译二进制文件名前缀
- *
- * 业务逻辑：
- * bin/ 目录下的文件名格式为 ghostcoded-{platform}
- * 需要匹配当前运行平台选取正确的二进制
- *
- * @returns 平台标识字符串，如 "darwin-arm64"，未匹配时返回 null
- */
-function detectPlatformSuffix(): string | null {
-  const { platform, arch } = process;
-
-  if (platform === "darwin" && arch === "arm64") {
-    return "darwin-arm64";
-  }
-  if (platform === "darwin" && (arch === "x64" || arch === "ia32")) {
-    return "darwin-x64";
-  }
-  if (platform === "linux" && arch === "x64") {
-    return "linux-x64";
-  }
-
-  return null;
-}
-
-/**
- * 尝试从包内 bin/ 目录复制预编译二进制作为离线回退
- *
- * 业务逻辑：
- * 1. 定位包内 bin/ 目录（相对于编译后的 dist/ 目录）
- * 2. 检查是否存在对应平台的二进制文件
- * 3. 创建目标目录并复制二进制，设置可执行权限
- *
- * @param targetDir 二进制安装目标目录
- * @returns true 表示回退成功，false 表示包内无可用二进制
- */
-export async function fallbackToLocalBin(targetDir: string): Promise<boolean> {
-  // 定位包内 bin/ 目录：dist/postinstall.js -> ../bin/
-  const pluginBinDir = join(dirname(new URL(import.meta.url).pathname), "..", "bin");
-
-  // 检测当前平台对应的二进制后缀
-  const platformSuffix = detectPlatformSuffix();
-  if (!platformSuffix) {
-    return false;
-  }
-
-  const daemonBinName = `ghostcoded-${platformSuffix}`;
-  const sourceDaemonPath = join(pluginBinDir, daemonBinName);
-
-  // 检查包内是否存在对应平台的 ghostcoded 二进制
-  let sourceDaemonExists = false;
-  try {
-    sourceDaemonExists = existsSync(sourceDaemonPath);
-  } catch {
-    // existsSync 抛出异常（如权限不足），视为不存在
-    return false;
-  }
-
-  if (!sourceDaemonExists) {
-    // 尝试查找 bin/ 目录下是否有任何匹配的二进制
-    try {
-      const binFiles = readdirSync(pluginBinDir) as string[];
-      const matchingBin = binFiles.find((f) => f.startsWith(`ghostcoded-${platformSuffix}`));
-      if (!matchingBin) {
-        return false;
-      }
-    } catch {
-      return false;
-    }
-  }
-
-  // 创建目标目录
-  mkdirSync(targetDir, { recursive: true });
-
-  // 复制 ghostcoded 二进制
-  const targetDaemonPath = join(targetDir, "ghostcoded");
-  copyFileSync(sourceDaemonPath, targetDaemonPath);
-  chmodSync(targetDaemonPath, 0o755);
-
-  // 同时复制 ghostcode-mcp 二进制（MCP 配置依赖此文件）
-  // 如果包内不存在 mcp 二进制则回退失败，禁止产出不完整的安装
-  const mcpBinName = `ghostcode-mcp-${platformSuffix}`;
-  const sourceMcpPath = join(pluginBinDir, mcpBinName);
-  let sourceMcpExists = false;
-  try {
-    sourceMcpExists = existsSync(sourceMcpPath);
-  } catch {
-    // 权限异常等情况
-  }
-
-  if (!sourceMcpExists) {
-    // 包内缺少 mcp 二进制，清理已复制的 daemon，回退失败
-    try {
-      unlinkSync(targetDaemonPath);
-    } catch {
-      // 清理失败不影响逻辑
-    }
-    return false;
-  }
-
-  const targetMcpPath = join(targetDir, "ghostcode-mcp");
-  copyFileSync(sourceMcpPath, targetMcpPath);
-  chmodSync(targetMcpPath, 0o755);
-
-  return true;
 }
 
 // ============================================

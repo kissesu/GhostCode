@@ -72,3 +72,4 @@ tempfile = "3"
 ghostcode-types = { path = "crates/ghostcode-types" }
 ghostcode-ledger = { path = "crates/ghostcode-ledger" }
 ghostcode-router = { path = "crates/ghostcode-router" }
+ghostcode-config = { path = "crates/ghostcode-config" }

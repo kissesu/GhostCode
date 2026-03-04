@@ -197,7 +197,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
           run_install: false
 
-      # 下载三平台二进制 artifact（Plugin 包内只需 ghostcoded）
+      # 下载三平台六个二进制 artifact（ghostcoded + ghostcode-mcp）
       - name: 下载所有二进制 artifact
         uses: actions/download-artifact@v4
         with:
@@ -205,13 +205,28 @@ jobs:
           merge-multiple: true
           path: binaries/
 
-      # 验证三个 ghostcoded 二进制均已下载
-      - name: 验证 ghostcoded 二进制文件
+      # 验证六个二进制均已下载，并将 target triple 格式重命名为 platform 格式
+      # ghostcoded-{target} → ghostcoded-{platform}（daemon 三平台）
+      # ghostcode-mcp-{target} → ghostcode-mcp-{platform}（MCP Server 三平台）
+      - name: 验证并重命名二进制文件
         run: |
           ls -la binaries/
+          # 验证 ghostcoded 三平台
           test -f binaries/ghostcoded-aarch64-apple-darwin    || (echo "缺少 darwin-arm64 ghostcoded 二进制" && exit 1)
           test -f binaries/ghostcoded-x86_64-apple-darwin     || (echo "缺少 darwin-x64 ghostcoded 二进制" && exit 1)
           test -f binaries/ghostcoded-x86_64-unknown-linux-gnu || (echo "缺少 linux-x64 ghostcoded 二进制" && exit 1)
+          # 验证 ghostcode-mcp 三平台
+          test -f binaries/ghostcode-mcp-aarch64-apple-darwin    || (echo "缺少 darwin-arm64 ghostcode-mcp 二进制" && exit 1)
+          test -f binaries/ghostcode-mcp-x86_64-apple-darwin     || (echo "缺少 darwin-x64 ghostcode-mcp 二进制" && exit 1)
+          test -f binaries/ghostcode-mcp-x86_64-unknown-linux-gnu || (echo "缺少 linux-x64 ghostcode-mcp 二进制" && exit 1)
+          # 重命名为 pack-plugin.sh 期望的 platform 格式
+          cp binaries/ghostcoded-aarch64-apple-darwin      binaries/ghostcoded-darwin-arm64
+          cp binaries/ghostcoded-x86_64-apple-darwin       binaries/ghostcoded-darwin-x64
+          cp binaries/ghostcoded-x86_64-unknown-linux-gnu  binaries/ghostcoded-linux-x64
+          cp binaries/ghostcode-mcp-aarch64-apple-darwin      binaries/ghostcode-mcp-darwin-arm64
+          cp binaries/ghostcode-mcp-x86_64-apple-darwin       binaries/ghostcode-mcp-darwin-x64
+          cp binaries/ghostcode-mcp-x86_64-unknown-linux-gnu  binaries/ghostcode-mcp-linux-x64
+          echo "六个二进制验证通过并重命名完成"
 
       # 安装 TS 依赖并编译
       - name: pnpm install
@@ -234,17 +249,21 @@ jobs:
             --version "${RELEASE_VERSION#v}" \
             --output ghostcode-plugin/
 
-      # 验证 Plugin 包结构
+      # 验证 Plugin 包结构（ghostcoded 三平台 + ghostcode-mcp 三平台 + 启动器脚本）
       - name: 验证 Plugin 包结构
         run: |
           echo "Plugin 包内容："
           find ghostcode-plugin/ -type f | sort
           test -f ghostcode-plugin/package.json          || (echo "缺少 package.json" && exit 1)
           test -f ghostcode-plugin/dist/index.js         || (echo "缺少 dist/index.js" && exit 1)
-          test -f ghostcode-plugin/bin/ghostcoded-aarch64-apple-darwin    || (echo "缺少 darwin-arm64 二进制" && exit 1)
-          test -f ghostcode-plugin/bin/ghostcoded-x86_64-apple-darwin     || (echo "缺少 darwin-x64 二进制" && exit 1)
-          test -f ghostcode-plugin/bin/ghostcoded-x86_64-unknown-linux-gnu || (echo "缺少 linux-x64 二进制" && exit 1)
-          test -f ghostcode-plugin/.claude/settings.json        || (echo "缺少 .claude/settings.json" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcode-mcp               || (echo "缺少 MCP 启动器脚本" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcode-mcp-darwin-arm64  || (echo "缺少 darwin-arm64 MCP 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcode-mcp-darwin-x64    || (echo "缺少 darwin-x64 MCP 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcode-mcp-linux-x64     || (echo "缺少 linux-x64 MCP 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-darwin-arm64     || (echo "缺少 darwin-arm64 Daemon 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-darwin-x64       || (echo "缺少 darwin-x64 Daemon 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcoded-linux-x64        || (echo "缺少 linux-x64 Daemon 二进制" && exit 1)
+          test -f ghostcode-plugin/.claude/settings.json           || (echo "缺少 .claude/settings.json" && exit 1)
 
       # 打包为 .tgz 用于 Release 附件
       - name: npm pack

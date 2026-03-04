@@ -24,6 +24,47 @@ use crate::paths::DaemonPaths;
 use crate::process::{cleanup_stale_files, write_addr_descriptor, write_pid_file};
 use crate::server::{AppState, DaemonConfig, serve_forever};
 
+/// 加载配置并设置日志级别
+///
+/// 加载四层 TOML 配置（default > global > project > runtime），
+/// 使用配置中的 observability.log_level 初始化 tracing subscriber。
+/// 加载失败时不阻断启动，使用默认 info 级别。
+///
+/// @param base_dir - 基础目录（如 ~/.ghostcode/）
+fn init_config_and_logging(base_dir: &std::path::Path) {
+    // 尝试加载四层配置
+    match ghostcode_config::load_effective_config(base_dir, None, None) {
+        Ok(config) => {
+            // 使用配置中的日志级别初始化 tracing
+            let level = match config.observability.log_level.as_str() {
+                "trace" => tracing::Level::TRACE,
+                "debug" => tracing::Level::DEBUG,
+                "warn" => tracing::Level::WARN,
+                "error" => tracing::Level::ERROR,
+                _ => tracing::Level::INFO,
+            };
+            // 使用 try_init 避免重复初始化（测试环境中多个 test 并行运行时可能多次调用）
+            let _ = tracing_subscriber::fmt()
+                .with_max_level(level)
+                .with_target(false)
+                .try_init();
+            tracing::info!(
+                "配置加载成功，日志级别: {}，最大 Actor 数: {}",
+                config.observability.log_level,
+                config.runtime.max_actors
+            );
+        }
+        Err(e) => {
+            // 配置加载失败不阻断启动，使用默认日志级别
+            let _ = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::INFO)
+                .with_target(false)
+                .try_init();
+            tracing::warn!("配置加载失败（使用默认值）: {}", e);
+        }
+    }
+}
+
 /// Daemon 启动配置
 ///
 /// 包含启动 Daemon 所需的全部路径信息
@@ -73,6 +114,12 @@ pub enum StartupError {
 /// @param config - 启动配置
 /// @return 正常退出或错误
 pub async fn run_daemon(config: StartupConfig) -> Result<(), StartupError> {
+    // ============================================
+    // 第零步：加载配置并初始化日志
+    // 必须在所有其他操作之前，确保后续日志输出可被正确记录
+    // ============================================
+    init_config_and_logging(&config.base_dir);
+
     // ============================================
     // 第一步：派生所有路径
     // ============================================

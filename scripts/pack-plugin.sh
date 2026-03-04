@@ -132,19 +132,47 @@ done
 # ============================================
 echo "第三步：复制二进制文件..."
 
-# MCP Server 二进制（单一跨平台版本，作为 settings.json 的 MCP server command）
-MCP_SERVER_BIN="ghostcode-mcp"
-MCP_SERVER_SRC="$BINARIES_DIR/$MCP_SERVER_BIN"
-MCP_SERVER_DST="$OUTPUT_DIR/bin/$MCP_SERVER_BIN"
+# MCP Server 三平台二进制（通过 stdio 与 Claude Code 通信）
+# 与 Daemon 相同，MCP Server 也是 Rust 编译的平台特定二进制
+# 通过 bin/ghostcode-mcp 启动器脚本自动选择正确平台版本
+MCP_BINARIES=(
+  "ghostcode-mcp-darwin-arm64"
+  "ghostcode-mcp-darwin-x64"
+  "ghostcode-mcp-linux-x64"
+)
 
-if [[ ! -f "$MCP_SERVER_SRC" ]]; then
-  echo "错误: 缺少 MCP Server 二进制: $MCP_SERVER_SRC" >&2
-  exit 1
-fi
+for bin in "${MCP_BINARIES[@]}"; do
+  src="$BINARIES_DIR/$bin"
+  dst="$OUTPUT_DIR/bin/$bin"
 
-cp "$MCP_SERVER_SRC" "$MCP_SERVER_DST"
-chmod +x "$MCP_SERVER_DST"
-echo "  复制: bin/$MCP_SERVER_BIN (MCP Server)"
+  if [[ ! -f "$src" ]]; then
+    echo "错误: 缺少 MCP Server 二进制文件: $src" >&2
+    exit 1
+  fi
+
+  cp "$src" "$dst"
+  chmod +x "$dst"
+  echo "  复制: bin/$bin (MCP Server)"
+done
+
+# 生成 MCP Server 平台检测启动器脚本
+# Claude Code 通过 .claude/settings.json 调用此脚本，
+# 脚本自动检测运行平台并 exec 对应的二进制
+cat > "$OUTPUT_DIR/bin/ghostcode-mcp" << 'LAUNCHER_EOF'
+#!/bin/sh
+# ghostcode-mcp 平台检测启动器
+# 自动选择当前平台对应的 MCP Server 二进制并执行
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLATFORM="$(uname -s)-$(uname -m)"
+case "$PLATFORM" in
+  Darwin-arm64)  exec "$SCRIPT_DIR/ghostcode-mcp-darwin-arm64" "$@" ;;
+  Darwin-x86_64) exec "$SCRIPT_DIR/ghostcode-mcp-darwin-x64" "$@" ;;
+  Linux-x86_64)  exec "$SCRIPT_DIR/ghostcode-mcp-linux-x64" "$@" ;;
+  *) echo "[GhostCode] 不支持的平台: $PLATFORM" >&2; exit 1 ;;
+esac
+LAUNCHER_EOF
+chmod +x "$OUTPUT_DIR/bin/ghostcode-mcp"
+echo "  生成: bin/ghostcode-mcp (平台检测启动器)"
 
 # Daemon 三平台二进制（后台守护进程，管理 Agent 生命周期）
 DAEMON_BINARIES=(
@@ -249,6 +277,9 @@ REQUIRED_FILES=(
   "package.json"
   "dist/index.js"
   "bin/ghostcode-mcp"
+  "bin/ghostcode-mcp-darwin-arm64"
+  "bin/ghostcode-mcp-darwin-x64"
+  "bin/ghostcode-mcp-linux-x64"
   "bin/ghostcoded-darwin-arm64"
   "bin/ghostcoded-darwin-x64"
   "bin/ghostcoded-linux-x64"

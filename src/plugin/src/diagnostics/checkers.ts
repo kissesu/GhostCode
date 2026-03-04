@@ -130,7 +130,9 @@ export async function checkDaemonReachable(): Promise<CheckResult> {
   // ============================================
   // 步骤 1：读取 addr.json 获取 socket 路径
   // ============================================
-  const addrPath = path.join(os.homedir(), ".ghostcode", "addr.json");
+  // 路径与 Rust Daemon 的 DaemonPaths 保持一致：
+  // daemon 写入 base_dir/daemon/ghostcoded.addr.json
+  const addrPath = path.join(os.homedir(), ".ghostcode", "daemon", "ghostcoded.addr.json");
 
   let socketPath: string;
   try {
@@ -241,21 +243,32 @@ export async function checkVersionMatch(
 
   // ============================================
   // 步骤 2：获取 daemon 版本
-  // 如果未传入则从 ~/.ghostcode/daemon-version 文件读取
+  // 如果未传入则从 addr.json 的 version 字段读取（Daemon 启动时写入）
+  // 路径与 Rust DaemonPaths 一致：base_dir/daemon/ghostcoded.addr.json
   // ============================================
   let dVer: string;
   if (daemonVersion !== undefined) {
     dVer = daemonVersion;
   } else {
-    const versionFilePath = path.join(os.homedir(), ".ghostcode", "daemon-version");
+    const addrPath = path.join(os.homedir(), ".ghostcode", "daemon", "ghostcoded.addr.json");
     try {
-      const content = await fs.readFile(versionFilePath, "utf-8");
-      dVer = content.trim();
+      const content = await fs.readFile(addrPath, "utf-8");
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      const rawVersion = parsed["version"];
+      if (typeof rawVersion !== "string" || rawVersion.length === 0) {
+        return {
+          name: "version-match",
+          status: "WARN",
+          message: "addr.json 中缺少 version 字段，跳过版本匹配检查",
+          suggestion: "请运行 `ghostcode init` 确保 Daemon 正确安装",
+        };
+      }
+      dVer = rawVersion;
     } catch {
       return {
         name: "version-match",
         status: "WARN",
-        message: "无法读取 Daemon 版本文件，跳过版本匹配检查",
+        message: "无法读取 Daemon 版本信息（Daemon 可能未启动），跳过版本匹配检查",
         suggestion: "请运行 `ghostcode init` 确保 Daemon 正确安装",
       };
     }

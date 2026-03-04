@@ -8,6 +8,7 @@
  */
 
 import { runInitCommand } from "./cli/init.js";
+import { runDoctor, formatDoctorReport } from "./cli/doctor.js";
 
 // ============================================
 // 版本信息
@@ -31,12 +32,14 @@ function printHelp(): void {
 
 命令：
   init      初始化 GhostCode 运行环境（目录、二进制、MCP 配置）
+  doctor    诊断 GhostCode 运行环境健康状态
   help      显示此帮助信息
   version   显示版本信息
 
 示例：
   ghostcode init              # 初始化环境
   ghostcode init --dry-run    # 模拟运行，不实际修改文件
+  ghostcode doctor            # 运行环境诊断
 `);
 }
 
@@ -101,6 +104,23 @@ async function handleInit(args: string[]): Promise<void> {
   console.log("[GhostCode] 初始化完成！");
 }
 
+/**
+ * 处理 doctor 子命令
+ *
+ * 业务逻辑：
+ * 1. 调用 runDoctor 执行所有诊断检查
+ * 2. 调用 formatDoctorReport 格式化输出
+ * 3. 总体状态为 FAIL 时以非零退出码退出
+ */
+async function handleDoctor(): Promise<void> {
+  const report = await runDoctor();
+  console.log(formatDoctorReport(report));
+
+  if (report.overallStatus === "FAIL") {
+    process.exit(1);
+  }
+}
+
 // ============================================
 // CLI 主入口
 // ============================================
@@ -136,6 +156,12 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   // init 子命令
   if (command === "init") {
     await handleInit(args.slice(1));
+    return;
+  }
+
+  // doctor 子命令
+  if (command === "doctor") {
+    await handleDoctor();
     return;
   }
 

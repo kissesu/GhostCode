@@ -34,13 +34,6 @@ import { verifyChecksum, parseSha256Sums } from "./utils/checksum.js";
 /** GhostCode 主目录 */
 const GHOSTCODE_HOME = join(homedir(), ".ghostcode");
 
-/** Daemon 二进制安装目标路径 */
-const DAEMON_BIN_PATH = join(GHOSTCODE_HOME, "bin", "ghostcoded");
-
-
-/** 安装标记文件路径（记录已安装的版本） */
-const INSTALLED_MARKER_PATH = join(GHOSTCODE_HOME, ".installed");
-
 /** GitHub Release 仓库地址（用于下载 bundle） */
 const GITHUB_REPO = "kissesu/GhostCode";
 
@@ -203,51 +196,9 @@ function isInstalledInDir(currentVersion: string, targetDir: string): boolean {
   }
 }
 
-/**
- * 检查在默认路径中是否已安装且版本匹配（向后兼容）
- *
- * @param currentVersion 当前 Plugin 版本
- * @returns true 表示已安装且无需重新安装
- */
-function isAlreadyInstalled(currentVersion: string): boolean {
-  if (!existsSync(INSTALLED_MARKER_PATH)) {
-    return false;
-  }
-
-  // 验证二进制文件是否存在（标记文件存在但二进制被删除的情况）
-  if (!existsSync(DAEMON_BIN_PATH)) {
-    return false;
-  }
-
-  try {
-    const content = readFileSync(INSTALLED_MARKER_PATH, "utf-8");
-    const marker = JSON.parse(content) as InstalledMarker;
-    // 版本匹配时跳过安装
-    return marker.version === currentVersion;
-  } catch {
-    // 标记文件损坏，重新安装
-    return false;
-  }
-}
-
 // ============================================
 // 标记文件写入
 // ============================================
-
-/**
- * 写入安装标记文件（默认路径）
- *
- * @param version 安装的版本号
- * @param platform 安装的平台
- */
-function writeInstalledMarker(version: string, platform: SupportedPlatform): void {
-  const marker: InstalledMarker = {
-    version,
-    installedAt: new Date().toISOString(),
-    platform,
-  };
-  writeFileSync(INSTALLED_MARKER_PATH, JSON.stringify(marker, null, 2), "utf-8");
-}
 
 /**
  * 写入安装标记文件到指定目录
@@ -581,12 +532,12 @@ export async function installFromRelease(
  *
  * 业务逻辑：
  * 1. 读取当前 Plugin 版本
- * 2. 检查是否已安装且版本匹配（快速路径，跳过安装）
+ * 2. 检查 bin/ 目录是否已安装且版本匹配（快速路径，跳过安装）
  * 3. 检测当前平台
- * 4. 定位 Plugin 包内对应平台的二进制文件
+ * 4. 定位 Plugin 包内对应平台的 ghostcoded 和 ghostcode-mcp 二进制文件
  * 5. 创建目标目录（~/.ghostcode/bin/）
- * 6. 复制二进制并设置可执行权限
- * 7. 写入安装标记文件
+ * 6. 复制双二进制并设置可执行权限
+ * 7. 写入安装标记文件到 bin/ 目录（与 installFromRelease 统一路径）
  *
  * @throws Error 当平台不受支持或二进制文件不存在时
  */
@@ -595,8 +546,10 @@ export async function installGhostcode(): Promise<void> {
 
   // ============================================
   // 快速路径：已安装且版本匹配，直接返回
+  // 使用 isInstalledInDir 检查 bin/ 目录，与 installFromRelease 统一
   // ============================================
-  if (isAlreadyInstalled(currentVersion)) {
+  const targetBinDir = join(GHOSTCODE_HOME, "bin");
+  if (isInstalledInDir(currentVersion, targetBinDir)) {
     return;
   }
 
@@ -604,7 +557,7 @@ export async function installGhostcode(): Promise<void> {
   // 检测平台
   // ============================================
   const platform = detectPlatform();
-  const binaryName = platformToBinaryName(platform);
+  const daemonBinaryName = platformToBinaryName(platform);
 
   // ============================================
   // 定位 Plugin 包内的预编译二进制
@@ -613,11 +566,22 @@ export async function installGhostcode(): Promise<void> {
   // 因此 bin/ 是 ../bin/（相对 dist/）
   // ============================================
   const pluginBinDir = join(dirname(new URL(import.meta.url).pathname), "..", "bin");
-  const sourceBinaryPath = join(pluginBinDir, binaryName);
+  const sourceDaemonPath = join(pluginBinDir, daemonBinaryName);
 
-  if (!existsSync(sourceBinaryPath)) {
+  if (!existsSync(sourceDaemonPath)) {
     throw new Error(
-      `Plugin 包内缺少平台对应二进制: ${sourceBinaryPath}\n` +
+      `Plugin 包内缺少平台对应 Daemon 二进制: ${sourceDaemonPath}\n` +
+      `请重新安装 GhostCode Plugin 或从 GitHub Release 手动下载。`
+    );
+  }
+
+  // MCP Server 二进制（与 Daemon 同平台后缀规则）
+  const mcpBinaryName = `ghostcode-mcp-${platform}`;
+  const sourceMcpPath = join(pluginBinDir, mcpBinaryName);
+
+  if (!existsSync(sourceMcpPath)) {
+    throw new Error(
+      `Plugin 包内缺少平台对应 MCP 二进制: ${sourceMcpPath}\n` +
       `请重新安装 GhostCode Plugin 或从 GitHub Release 手动下载。`
     );
   }
@@ -625,19 +589,21 @@ export async function installGhostcode(): Promise<void> {
   // ============================================
   // 创建目标目录（~/.ghostcode/bin/）
   // ============================================
-  const targetBinDir = dirname(DAEMON_BIN_PATH);
   mkdirSync(targetBinDir, { recursive: true });
 
   // ============================================
-  // 复制二进制到安装目标路径
+  // 复制双二进制到安装目标路径
   // ============================================
-  copyFileSync(sourceBinaryPath, DAEMON_BIN_PATH);
+  const targetDaemonPath = join(targetBinDir, "ghostcoded");
+  copyFileSync(sourceDaemonPath, targetDaemonPath);
+  chmodSync(targetDaemonPath, 0o755);
 
-  // 设置可执行权限（0o755: rwxr-xr-x）
-  chmodSync(DAEMON_BIN_PATH, 0o755);
+  const targetMcpPath = join(targetBinDir, "ghostcode-mcp");
+  copyFileSync(sourceMcpPath, targetMcpPath);
+  chmodSync(targetMcpPath, 0o755);
 
   // ============================================
-  // 写入安装标记文件
+  // 写入安装标记文件到 bin/ 目录（与 installFromRelease 统一路径）
   // ============================================
-  writeInstalledMarker(currentVersion, platform);
+  writeInstalledMarkerToDir(currentVersion, platform, targetBinDir);
 }
