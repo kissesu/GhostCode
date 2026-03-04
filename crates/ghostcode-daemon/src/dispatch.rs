@@ -85,20 +85,22 @@ pub async fn dispatch(state: &AppState, req: DaemonRequest) -> DaemonResponse {
         "shutdown" => handle_shutdown(state),
 
         // === Group 管理 ===
-        "group_create" => stub(&req.op),
-        "group_show" => stub(&req.op),
-        "group_start" => stub(&req.op),
-        "group_stop" => stub(&req.op),
-        "group_delete" => stub(&req.op),
-        "group_set_state" => stub(&req.op),
-        "groups" => stub(&req.op),
+        "group_create" => handle_group_create(state, &req.args),
+        "group_show" => handle_group_show(state, &req.args),
+        // group_start/stop 通过 set_group_state 实现（仅状态变更，无 OS 进程管理）
+        // group_start 将 Group 状态置为 active，group_stop 置为 idle
+        "group_start" => handle_group_set_state_shortcut(state, &req.args, "active"),
+        "group_stop" => handle_group_set_state_shortcut(state, &req.args, "idle"),
+        "group_delete" => handle_group_delete(state, &req.args),
+        "group_set_state" => handle_group_set_state(state, &req.args),
+        "groups" => handle_groups_list(state),
 
         // === Actor 管理 ===
-        "actor_add" => stub(&req.op),
-        "actor_list" => stub(&req.op),
+        "actor_add" => handle_actor_add(state, &req.args),
+        "actor_list" => handle_actor_list(state, &req.args),
         "actor_start" => handle_actor_start(state, &req.args).await,
         "actor_stop" => handle_actor_stop(state, &req.args).await,
-        "actor_remove" => stub(&req.op),
+        "actor_remove" => handle_actor_remove(state, &req.args),
 
         // === 消息 ===
         "send" => handle_send(state, &req.args).await,
@@ -1005,12 +1007,38 @@ fn handle_skill_promote(state: &AppState, args: &serde_json::Value) -> DaemonRes
     use crate::skill_learning::{promote_skill, SkillStore};
     let mut store_map = state.skill_store.lock().unwrap_or_else(|e| e.into_inner());
     // group 不存在时返回 NOT_FOUND（promote 要求候选已存在）
-    let group_store = store_map.entry(group_id).or_insert_with(SkillStore::new);
+    let group_store = store_map.entry(group_id.clone()).or_insert_with(SkillStore::new);
     match promote_skill(group_store, &candidate_id, &skill_id, &skill_name) {
         Ok(skill) => {
-            // W6 TODO：skill_promote 成功后应将 SkillPromoted 事件追加到账本
-            // 当前 AppState 未直接暴露 ledger 写入接口，需要后续集成
-            // 参考实现：通过 groups_dir + group_id 构造账本路径后调用 ghostcode-ledger::append
+            // W6 修复：skill_promote 成功后写 SkillPromoted 事件到账本
+            // 通过 groups_dir + group_id 构造账本路径，使用 ghostcode-ledger::append_event
+            // 写账本是尽力而为（best-effort）：失败不阻断 promote 响应
+            let group_dir = state.groups_dir.join(&group_id);
+            let ledger_path = group_dir.join("state/ledger/ledger.jsonl");
+            let lock_path = group_dir.join("state/ledger/ledger.lock");
+
+            // 仅在账本目录存在时写入，避免路径不存在时触发 IO 错误
+            if ledger_path.parent().map(|p| p.exists()).unwrap_or(false) {
+                use ghostcode_ledger::append_event;
+                use ghostcode_types::event::{Event, EventKind};
+
+                let event = Event::new(
+                    EventKind::SkillPromoted,
+                    &group_id,
+                    "default",
+                    "user",
+                    serde_json::json!({
+                        "candidate_id": candidate_id,
+                        "skill_id": skill_id,
+                        "skill_name": skill_name,
+                    }),
+                );
+                // 写入失败只记录警告，不回滚内存中的 promote 操作
+                if let Err(e) = append_event(&ledger_path, &lock_path, &event) {
+                    tracing::warn!("skill_promote 写账本事件失败（尽力而为）: {}", e);
+                }
+            }
+
             DaemonResponse::ok(serde_json::to_value(skill).unwrap_or(serde_json::Value::Null))
         }
         Err(msg) => DaemonResponse::err("NOT_FOUND", msg),
@@ -1038,4 +1066,355 @@ fn handle_hud_snapshot(state: &AppState, args: &serde_json::Value) -> DaemonResp
     DaemonResponse::ok(serde_json::to_value(snapshot).unwrap_or_default())
 }
 
+// ============================================
+// Group Handler 实现
+// ============================================
+
+/// handle_group_create: 创建新 Group
+///
+/// 在 groups_dir 下创建目录结构，写入 group.yaml 和 GroupCreate 事件
+///
+/// 必填参数：title
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_group_create(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let title = match args["title"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 title 字段"),
+    };
+
+    match crate::group::create_group(&state.groups_dir, title) {
+        Ok(group) => DaemonResponse::ok(serde_json::to_value(group).unwrap_or_default()),
+        Err(e) => DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    }
+}
+
+/// handle_group_show: 查看指定 Group 信息
+///
+/// 从 groups_dir 读取 group.yaml 并返回 GroupInfo
+///
+/// 必填参数：group_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_group_show(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+
+    let group_dir = state.groups_dir.join(group_id);
+    match crate::group::load_group(&group_dir) {
+        Ok(group) => DaemonResponse::ok(serde_json::to_value(group).unwrap_or_default()),
+        Err(crate::group::GroupError::NotFound(_)) => DaemonResponse::err(
+            "NOT_FOUND",
+            format!("Group '{}' 不存在", group_id),
+        ),
+        Err(e) => DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    }
+}
+
+/// handle_group_delete: 删除指定 Group（清理整个目录）
+///
+/// 必填参数：group_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_group_delete(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+
+    match crate::group::delete_group(&state.groups_dir, group_id) {
+        Ok(()) => DaemonResponse::ok(serde_json::json!({ "deleted": true, "group_id": group_id })),
+        Err(crate::group::GroupError::NotFound(_)) => DaemonResponse::err(
+            "NOT_FOUND",
+            format!("Group '{}' 不存在", group_id),
+        ),
+        Err(e) => DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    }
+}
+
+/// handle_group_set_state: 设置 Group 状态
+///
+/// 必填参数：group_id, state（idle/running/paused）
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_group_set_state(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+
+    let state_str = match args["state"].as_str() {
+        Some(s) => s,
+        None => return DaemonResponse::err("INVALID_ARGS", "缺少 state 字段"),
+    };
+
+    let new_state = parse_group_state(state_str);
+    let new_state = match new_state {
+        Some(s) => s,
+        None => return DaemonResponse::err(
+            "INVALID_ARGS",
+            format!("无效的 state '{}', 允许值: active, idle, paused, stopped", state_str),
+        ),
+    };
+
+    let group_dir = state.groups_dir.join(group_id);
+    let mut group = match crate::group::load_group(&group_dir) {
+        Ok(g) => g,
+        Err(crate::group::GroupError::NotFound(_)) => return DaemonResponse::err(
+            "NOT_FOUND",
+            format!("Group '{}' 不存在", group_id),
+        ),
+        Err(e) => return DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    };
+
+    match crate::group::set_group_state(&state.groups_dir, &mut group, new_state) {
+        Ok(()) => DaemonResponse::ok(serde_json::to_value(&group).unwrap_or_default()),
+        Err(e) => DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    }
+}
+
+/// handle_group_set_state_shortcut: group_start/group_stop 快捷路由
+///
+/// group_start -> state = active
+/// group_stop  -> state = idle
+///
+/// 必填参数：group_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+/// @param target_state - 目标状态字符串（"active" 或 "idle"）
+fn handle_group_set_state_shortcut(
+    state: &AppState,
+    args: &serde_json::Value,
+    target_state: &str,
+) -> DaemonResponse {
+    // 构造包含 state 字段的 args，复用 handle_group_set_state 逻辑
+    let mut new_args = args.clone();
+    if let Some(obj) = new_args.as_object_mut() {
+        obj.insert("state".to_string(), serde_json::Value::String(target_state.to_string()));
+    }
+    handle_group_set_state(state, &new_args)
+}
+
+/// handle_groups_list: 列出所有 Group
+///
+/// 扫描 groups_dir，返回所有合法 Group 列表
+///
+/// 无必填参数
+///
+/// @param state - 共享应用状态
+fn handle_groups_list(state: &AppState) -> DaemonResponse {
+    match crate::group::list_groups(&state.groups_dir) {
+        Ok(groups) => DaemonResponse::ok(serde_json::json!({
+            "groups": serde_json::to_value(groups).unwrap_or_default(),
+        })),
+        Err(e) => DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    }
+}
+
+/// 解析 GroupState 字符串
+///
+/// 允许值：active, idle, paused, stopped
+/// group_start 映射为 active，group_stop 映射为 idle
+fn parse_group_state(s: &str) -> Option<ghostcode_types::group::GroupState> {
+    match s {
+        "active" | "running" => Some(ghostcode_types::group::GroupState::Active),
+        "idle" => Some(ghostcode_types::group::GroupState::Idle),
+        "paused" => Some(ghostcode_types::group::GroupState::Paused),
+        "stopped" => Some(ghostcode_types::group::GroupState::Stopped),
+        _ => None,
+    }
+}
+
+// ============================================
+// Actor Handler 实现
+// ============================================
+
+/// handle_actor_add: 向指定 Group 添加 Actor
+///
+/// 写入 ActorAdd 事件，更新 group.yaml
+///
+/// 必填参数：group_id, actor_id, display_name, role, runtime
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_actor_add(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+
+    let actor_id = match args["actor_id"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 actor_id 字段"),
+    };
+    if let Err(resp) = validate_id(actor_id, "actor_id") { return resp; }
+
+    let display_name = args["display_name"]
+        .as_str()
+        .unwrap_or(actor_id)
+        .to_string();
+
+    // 解析 role（默认 peer）
+    // ActorRole 枚举只有 Foreman 和 Peer 两种
+    let role_str = args["role"].as_str().unwrap_or("peer");
+    let role = parse_actor_role(role_str);
+    let role = match role {
+        Some(r) => r,
+        None => return DaemonResponse::err(
+            "INVALID_ARGS",
+            format!("无效的 role '{}', 允许值: foreman, peer", role_str),
+        ),
+    };
+
+    // 解析 runtime（默认 claude）
+    let runtime_str = args["runtime"].as_str().unwrap_or("claude");
+    let runtime = parse_runtime_kind(runtime_str);
+
+    let group_dir = state.groups_dir.join(group_id);
+    let mut group = match crate::group::load_group(&group_dir) {
+        Ok(g) => g,
+        Err(crate::group::GroupError::NotFound(_)) => return DaemonResponse::err(
+            "NOT_FOUND",
+            format!("Group '{}' 不存在", group_id),
+        ),
+        Err(e) => return DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    };
+
+    let actor = ghostcode_types::actor::ActorInfo {
+        actor_id: actor_id.to_string(),
+        display_name,
+        role,
+        runtime,
+        // 新注册的 Actor 默认处于未运行状态
+        running: false,
+        pid: None,
+    };
+
+    match crate::actor_mgmt::add_actor(&state.groups_dir, &mut group, actor) {
+        Ok(()) => DaemonResponse::ok(serde_json::json!({
+            "added": true,
+            "actor_id": actor_id,
+            "group_id": group_id,
+        })),
+        Err(crate::actor_mgmt::ActorError::DuplicateId(id)) => DaemonResponse::err(
+            "DUPLICATE_ID",
+            format!("Actor ID '{}' 已存在", id),
+        ),
+        Err(crate::actor_mgmt::ActorError::DuplicateForeman) => DaemonResponse::err(
+            "DUPLICATE_FOREMAN",
+            "该 Group 已存在 Foreman，不允许添加第二个",
+        ),
+        Err(e) => DaemonResponse::err("ACTOR_ERROR", e.to_string()),
+    }
+}
+
+/// handle_actor_list: 列出指定 Group 中的所有 Actor
+///
+/// 从 group.yaml 读取 Actor 列表
+///
+/// 必填参数：group_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_actor_list(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+
+    let group_dir = state.groups_dir.join(group_id);
+    let group = match crate::group::load_group(&group_dir) {
+        Ok(g) => g,
+        Err(crate::group::GroupError::NotFound(_)) => return DaemonResponse::err(
+            "NOT_FOUND",
+            format!("Group '{}' 不存在", group_id),
+        ),
+        Err(e) => return DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    };
+
+    let actors = crate::actor_mgmt::list_actors(&group);
+    DaemonResponse::ok(serde_json::json!({
+        "actors": serde_json::to_value(actors).unwrap_or_default(),
+        "count": actors.len(),
+        "group_id": group_id,
+    }))
+}
+
+/// handle_actor_remove: 从 Group 移除指定 Actor
+///
+/// 写入 ActorRemove 事件，更新 group.yaml
+///
+/// 必填参数：group_id, actor_id
+///
+/// @param state - 共享应用状态
+/// @param args - 请求参数
+fn handle_actor_remove(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let group_id = match args["group_id"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 group_id 字段"),
+    };
+    if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
+
+    let actor_id = match args["actor_id"].as_str() {
+        Some(s) if !s.is_empty() => s,
+        _ => return DaemonResponse::err("INVALID_ARGS", "缺少 actor_id 字段"),
+    };
+    if let Err(resp) = validate_id(actor_id, "actor_id") { return resp; }
+
+    let group_dir = state.groups_dir.join(group_id);
+    let mut group = match crate::group::load_group(&group_dir) {
+        Ok(g) => g,
+        Err(crate::group::GroupError::NotFound(_)) => return DaemonResponse::err(
+            "NOT_FOUND",
+            format!("Group '{}' 不存在", group_id),
+        ),
+        Err(e) => return DaemonResponse::err("GROUP_ERROR", e.to_string()),
+    };
+
+    match crate::actor_mgmt::remove_actor(&state.groups_dir, &mut group, actor_id) {
+        Ok(()) => DaemonResponse::ok(serde_json::json!({
+            "removed": true,
+            "actor_id": actor_id,
+            "group_id": group_id,
+        })),
+        Err(crate::actor_mgmt::ActorError::NotFound(id)) => DaemonResponse::err(
+            "NOT_FOUND",
+            format!("Actor '{}' 不存在", id),
+        ),
+        Err(e) => DaemonResponse::err("ACTOR_ERROR", e.to_string()),
+    }
+}
+
+/// 解析 ActorRole 字符串
+///
+/// ActorRole 只有 Foreman 和 Peer 两种，与 ghostcode-types/src/actor.rs 对齐
+fn parse_actor_role(s: &str) -> Option<ghostcode_types::actor::ActorRole> {
+    match s {
+        "foreman" => Some(ghostcode_types::actor::ActorRole::Foreman),
+        "peer" => Some(ghostcode_types::actor::ActorRole::Peer),
+        _ => None,
+    }
+}
+
+/// 解析 RuntimeKind 字符串
+fn parse_runtime_kind(s: &str) -> ghostcode_types::actor::RuntimeKind {
+    match s {
+        "claude" => ghostcode_types::actor::RuntimeKind::Claude,
+        "codex" => ghostcode_types::actor::RuntimeKind::Codex,
+        "gemini" => ghostcode_types::actor::RuntimeKind::Gemini,
+        other => ghostcode_types::actor::RuntimeKind::Custom(other.to_string()),
+    }
+}
 // ============================================

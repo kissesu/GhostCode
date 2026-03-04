@@ -85,17 +85,18 @@ async fn stub_ops_return_not_implemented() {
     let state = AppState::default();
 
     // 除了已实现的 handler，其余 op 应返回 NOT_IMPLEMENTED
-    // 已实现（26 个）:
+    // 已实现（38 个中的 36 个）:
     //   Phase 1: ping, shutdown, actor_start, actor_stop, headless_status, headless_set_status (6 个)
     //   T11/T12: send, reply, inbox_list, inbox_mark_read, inbox_mark_all_read (5 个)
     //   Phase 2: route_task, route_task_parallel, route_status, route_cancel, session_list (5 个)
     //   Phase 3: verification_start, verification_status, verification_cancel, hud_snapshot (4 个)
     //   Phase 4 Dashboard: dashboard_snapshot, dashboard_timeline, dashboard_agents (3 个)
     //   Phase 4 Skill: skill_list, skill_promote, skill_learn_fragment (3 个)
-    // stub（12 个）:
-    //   Group: group_create, group_show, group_start, group_stop, group_delete, group_set_state, groups (7 个)
-    //   Actor: actor_add, actor_list, actor_remove (3 个)
-    //   Skill: skill_extract, team_skill_list (2 个)
+    //   Group ops（新增实现）: group_create, group_show, group_start, group_stop,
+    //                          group_delete, group_set_state, groups (7 个)
+    //   Actor ops（新增实现）: actor_add, actor_list, actor_remove (3 个)
+    // stub（2 个）:
+    //   Skill: skill_extract, team_skill_list (2 个，依赖 LLM 调用链和跨 group 聚合）
     let stub_ops: Vec<&&str> = KNOWN_OPS
         .iter()
         .filter(|op| {
@@ -131,10 +132,24 @@ async fn stub_ops_return_not_implemented() {
                 && **op != "skill_list"
                 && **op != "skill_promote"
                 && **op != "skill_learn_fragment"
+                // Group ops（7 个，已路由到 group 模块实现）
+                && **op != "group_create"
+                && **op != "group_show"
+                && **op != "group_start"
+                && **op != "group_stop"
+                && **op != "group_delete"
+                && **op != "group_set_state"
+                && **op != "groups"
+                // Actor ops（3 个，已路由到 actor_mgmt 模块实现）
+                && **op != "actor_add"
+                && **op != "actor_list"
+                && **op != "actor_remove"
         })
         .collect();
 
-    assert_eq!(stub_ops.len(), 12, "应有 12 个占位 op (38 总 - 26 已实现)");
+    // skill_extract（依赖 LLM 抽取器调用链）
+    // team_skill_list（依赖跨 group 聚合，属于高权限操作）
+    assert_eq!(stub_ops.len(), 2, "应有 2 个占位 op（skill_extract, team_skill_list）");
 
     for op in stub_ops {
         let req = DaemonRequest::new(*op, serde_json::json!({}));
