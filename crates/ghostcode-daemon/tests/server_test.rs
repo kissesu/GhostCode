@@ -18,12 +18,19 @@ use tokio::net::UnixStream;
 
 use ghostcode_daemon::server::{AppState, DaemonConfig};
 use ghostcode_types::ipc::DaemonRequest;
+use tokio::net::UnixListener;
 
 /// 创建临时 socket 路径并启动 server，返回 socket 路径
+///
+/// 使用更新后的 serve_forever 签名（接受 pre-bound UnixListener）：
+/// 先 bind socket，再启动服务，与生产环境的启动顺序一致。
 async fn start_test_server() -> (tempfile::TempDir, std::path::PathBuf, Arc<AppState>) {
     let dir = tempfile::TempDir::new().unwrap();
     let sock_path = dir.path().join("test.sock");
     let state = Arc::new(AppState::default());
+
+    // 先 bind socket（与生产环境启动顺序一致）
+    let listener = UnixListener::bind(&sock_path).unwrap();
 
     let config = DaemonConfig {
         socket_path: sock_path.clone(),
@@ -31,10 +38,10 @@ async fn start_test_server() -> (tempfile::TempDir, std::path::PathBuf, Arc<AppS
 
     let server_state = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = ghostcode_daemon::server::serve_forever(config, server_state).await;
+        let _ = ghostcode_daemon::server::serve_forever(listener, config, server_state).await;
     });
 
-    // 等待 server 启动
+    // 等待 server 启动（socket 文件已在 bind 时创建，无需等待）
     for _ in 0..50 {
         if sock_path.exists() {
             break;

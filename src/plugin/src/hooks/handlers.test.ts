@@ -20,6 +20,16 @@ vi.mock("../daemon.js", () => ({
   startHeartbeat: vi.fn(),
 }));
 
+// Mock session-lease.js，隔离文件系统依赖
+// getRefcount 默认返回 0，模拟无其他会话持有 lease 的场景
+vi.mock("../session-lease.js", () => ({
+  SessionLeaseManager: vi.fn().mockImplementation(() => ({
+    acquireLease: vi.fn().mockReturnValue({ leaseId: "test-lease-id", refcount: 1 }),
+    releaseLease: vi.fn().mockReturnValue({ refcount: 0, isLast: true }),
+    getRefcount: vi.fn().mockReturnValue(0),
+  })),
+}));
+
 import { ensureDaemon, stopDaemon, startHeartbeat } from "../daemon.js";
 import { clearHooks, getHooks } from "./registry.js";
 
