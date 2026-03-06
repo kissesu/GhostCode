@@ -65,21 +65,45 @@ grep -r "export function\|export class\|export const" src/plugin/src/ --include=
 
 ### Step 2: 多模型并行分析（PARALLEL）
 
-**CRITICAL**: 必须在一条消息中同时发起两个后台调用，run_in_background: true。
+**CRITICAL**: 必须在一条消息中同时发起两个 Bash 后台调用，run_in_background: true。
 
-Agent 1（Claude/Codex 路由 - Rust 核心分析）：
-- 技术可行性评估（Rust 编译器约束、tokio 异步限制）
-- 推荐实施方案（精确到文件和函数）
-- Rust 模块依赖分析
-- 风险评估
+**Bash 调用 1（Codex 后端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/codex-analyzer.md
 
-Agent 2（Gemini 路由 - TS Plugin 分析）：
-- TS Plugin 可行性评估（hook 生命周期、skill 格式）
-- 推荐实施方案（精确到文件和函数）
-- Plugin 与核心 IPC 接口对齐方案
-- 集成风险
+你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）进行 Rust 核心分析规划。
 
-等待两个 Agent 完成（timeout: 600000ms），不可提前终止。
+请基于 team-research 产出的约束集，提供：
+1. 技术可行性评估：Rust 编译器约束、tokio 异步限制、内存安全要求
+2. 推荐实施方案：精确到文件路径和函数名的 Rust 核心实施步骤
+3. Rust 模块依赖分析：哪些模块需要先实现、模块间接口约定
+4. 风险评估：编译时间风险、并发安全风险、接口兼容性风险及缓解方案
+
+请以结构化 JSON 格式输出，包含 feasibility、implementation_plan、module_dependencies、risks 字段。
+CODEX_TASK
+```
+
+**Bash 调用 2（Gemini 前端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/gemini-analyzer.md
+
+你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）进行 TS Plugin 分析规划。
+
+请基于 team-research 产出的约束集，提供：
+1. TS Plugin 可行性评估：hook 生命周期约束、skill 格式限制、TypeScript 类型安全要求
+2. 推荐实施方案：精确到文件路径和函数名的 TS Plugin 实施步骤
+3. Plugin 与核心 IPC 接口对齐方案：消息格式约定、错误处理对齐、版本兼容策略
+4. 集成风险：IPC 协议变更风险、hook 调用时序风险、类型不匹配风险及缓解方案
+
+请以结构化 JSON 格式输出，包含 feasibility、implementation_plan、ipc_alignment、risks 字段。
+GEMINI_TASK
+```
+
+等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
+
+**失败处理**：若 wrapper 退出码非 0（如 CLI 不可用退出码 127），log 错误并继续执行（用 Claude 自身分析替代），不终止整个流程。
 
 ### Step 3: 综合分析 + 任务拆分
 

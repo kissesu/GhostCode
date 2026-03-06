@@ -147,7 +147,45 @@ pnpm test && pnpm typecheck
 
 ### Step 3: 外部模型协作（可选）
 
-对复杂算法或性能敏感代码，可调用外部模型获取参考实现：
+对复杂算法或性能敏感代码，可调用外部模型获取参考实现。
+
+**CRITICAL**: 必须在一条消息中同时发起两个 Bash 后台调用，run_in_background: true。
+
+**Bash 调用 1（Codex 后端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/codex-analyzer.md
+
+你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）提供 Rust 核心实现参考。
+
+请针对当前实施任务，提供：
+1. Rust 实现参考方案：数据结构设计、核心算法逻辑、关键函数签名
+2. 注意事项：内存安全、并发安全、错误处理的具体建议
+3. 示例代码片段：仅作参考，实际实现需人工重写为生产级代码
+
+注意：输出仅作原型参考，最终代码必须由人工重写，确保符合项目规范（中文注释、Atlas.oi 署名）。
+CODEX_TASK
+```
+
+**Bash 调用 2（Gemini 前端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/gemini-analyzer.md
+
+你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）提供 TS Plugin 实现参考。
+
+请针对当前实施任务，提供：
+1. TypeScript 实现参考方案：类型定义、函数实现、接口设计
+2. 注意事项：类型安全、hook 生命周期、IPC 协议合规的具体建议
+3. 示例代码片段：仅作参考，实际实现需人工重写为生产级代码
+
+注意：输出仅作原型参考，最终代码必须由人工重写，确保符合项目规范（中文注释、Atlas.oi 署名）。
+GEMINI_TASK
+```
+
+等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
+
+**失败处理**：若 wrapper 退出码非 0（如 CLI 不可用退出码 127），log 错误并继续执行（用 Claude 自身实现替代），不终止整个流程。
 
 **MANDATORY 原则**：外部模型输出仅作原型参考，必须人工重写为生产级代码：
 - 移除冗余
@@ -168,19 +206,67 @@ pnpm test && pnpm typecheck
 
 ### Step 5: 多模型交叉审查（PARALLEL）
 
-**CRITICAL**: 必须在一条消息中同时发起两个后台审查调用。
+**CRITICAL**: 必须在一条消息中同时发起两个 Bash 后台调用，run_in_background: true。
 
-Agent 1（Claude/Codex）：
-- 审查正确性（逻辑错误、边界条件）
-- 审查安全性（Rust unsafe 块、注入风险）
-- 审查规范合规性（约束集 HC-N 满足情况）
-- 输出 JSON findings
+**Bash 调用 1（Codex 代码审查）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_REVIEW'
+ROLE_FILE: ~/.ghostcode/prompts/codex-reviewer.md
 
-Agent 2（Gemini）：
-- 审查可维护性（可读性、复杂度）
-- 审查模式一致性（与项目现有风格对齐）
-- 审查集成影响（跨模块影响）
-- 输出 JSON findings
+你正在对 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的代码变更进行审查。
+
+请审查以下维度：
+1. 正确性：逻辑错误、边界条件、off-by-one 错误
+2. 安全性：Rust unsafe 块使用、注入风险、权限问题
+3. 规范合规性：约束集 HC-N 满足情况、TDD 覆盖率
+
+输出 JSON findings：
+{
+  "findings": [
+    {
+      "severity": "Critical|Warning|Info",
+      "dimension": "logic|security|compliance",
+      "file": "文件路径",
+      "line": 行号,
+      "description": "问题描述",
+      "fix_suggestion": "修复建议"
+    }
+  ]
+}
+CODEX_REVIEW
+```
+
+**Bash 调用 2（Gemini 代码审查）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_REVIEW'
+ROLE_FILE: ~/.ghostcode/prompts/gemini-reviewer.md
+
+你正在对 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的代码变更进行审查。
+
+请审查以下维度：
+1. 可维护性：可读性、代码复杂度、函数长度
+2. 模式一致性：与项目现有风格对齐、命名规范、注释质量
+3. 集成影响：跨模块影响、IPC 协议兼容性、接口变更影响
+
+输出 JSON findings：
+{
+  "findings": [
+    {
+      "severity": "Critical|Warning|Info",
+      "dimension": "maintainability|patterns|integration",
+      "file": "文件路径",
+      "line": 行号,
+      "description": "问题描述",
+      "fix_suggestion": "修复建议"
+    }
+  ]
+}
+GEMINI_REVIEW
+```
+
+等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
+
+**失败处理**：若 wrapper 退出码非 0（如 CLI 不可用退出码 127），log 错误并继续执行（用 Claude 自身审查替代），不终止整个流程。
 
 处理所有 Critical 发现后继续。
 

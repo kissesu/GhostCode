@@ -1,0 +1,21 @@
+# ghostcode-wrapper - 薄 CLI 入口 crate
+#
+# 复用 ghostcode-router crate 的所有模块，
+# 作为独立可执行文件对外分发。
+#
+# @author Atlas.oi
+# @date 2026-03-06
+
+[package]
+name = "ghostcode-wrapper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ghostcode-router = { path = "../ghostcode-router" }
+clap = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

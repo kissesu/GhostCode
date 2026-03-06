@@ -65,25 +65,45 @@ find src -name "*_test.rs" -o -name "*.test.ts" | head -10
 
 ### Step 3: 多模型并行分析（PARALLEL）
 
-**CRITICAL**: 必须在一条消息中同时发起两个后台调用，run_in_background: true。
+**CRITICAL**: 必须在一条消息中同时发起两个 Bash 后台调用，run_in_background: true。
 
-Agent 1（Claude/Codex 路由 - Rust 核心方案）：
-输入：需求 + 约束集 + Rust 核心现有代码结构
-输出：
-1. 技术可行性评估（基于 HC-N 约束）
-2. 推荐实施方案（精确到 file:function 粒度）
-3. TDD 测试用例设计（测试先于实现）
-4. 风险评估和缓解方案
+**Bash 调用 1（Codex 后端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/codex-analyzer.md
 
-Agent 2（Gemini 路由 - TS Plugin 方案）：
-输入：需求 + 约束集 + TS Plugin 现有代码结构
-输出：
-1. Plugin 可行性评估（基于 HC-N 约束）
-2. 推荐实施方案（精确到 file:function 粒度）
-3. TDD 测试用例设计
-4. IPC 接口对齐方案
+你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）进行 Rust 核心技术可行性分析。
 
-等待两个 Agent 完成（timeout: 600000ms），不可提前终止。
+基于 research.md 中的约束集，请分析：
+1. 技术可行性评估：基于 HC-N 硬约束，评估 Rust 实现的可行性和风险
+2. 推荐实施方案：精确到文件路径和函数名的实施建议
+3. TDD 测试用例设计：先写测试（Red 阶段）的具体测试用例列表
+4. 风险评估和缓解方案：Rust 编译器约束、tokio 异步限制、内存安全风险
+
+请以结构化 JSON 格式输出分析结果，包含 feasibility、recommended_approach、test_cases、risks 字段。
+CODEX_TASK
+```
+
+**Bash 调用 2（Gemini 前端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/gemini-analyzer.md
+
+你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）进行 TS Plugin 可行性评估。
+
+基于 research.md 中的约束集，请分析：
+1. Plugin 可行性评估：基于 HC-N 硬约束，评估 TS Plugin 实现的可行性
+2. 推荐实施方案：精确到文件路径和函数名的实施建议
+3. TDD 测试用例设计：先写测试的具体测试用例列表
+4. IPC 接口对齐方案：与 Rust 核心的接口对齐策略、消息格式约定
+
+请以结构化 JSON 格式输出分析结果，包含 feasibility、recommended_approach、test_cases、ipc_alignment 字段。
+GEMINI_TASK
+```
+
+等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
+
+**失败处理**：若 wrapper 退出码非 0（如 CLI 不可用退出码 127），log 错误并继续执行（用 Claude 自身分析替代），不终止整个流程。
 
 ### Step 4: 综合分析 + 矛盾识别
 

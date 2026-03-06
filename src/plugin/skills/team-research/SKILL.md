@@ -88,19 +88,47 @@ grep -r "JSON-RPC\|socket\|stdio" src/core/src/ --include="*.rs" -l
 
 ### Step 3: 多模型并行探索（PARALLEL）
 
-**CRITICAL**: 必须在一条消息中同时发起两个后台 Bash 调用。
+**CRITICAL**: 必须在一条消息中同时发起两个 Bash 后台调用，run_in_background: true。
 
-Agent 1（Claude/Codex 路由 - 探索边界 A）：
-- 分析 Rust 核心架构约束
-- 识别 tokio 异步模式、错误类型、接口定义
-- 输出 JSON 格式约束集
+**Bash 调用 1（Codex 后端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/codex-analyzer.md
 
-Agent 2（Gemini 路由 - 探索边界 B）：
-- 分析 TS Plugin 架构约束
-- 识别 hook 生命周期、skill 格式、router 策略
-- 输出 JSON 格式约束集
+你正在探索 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的后端/核心约束边界。
 
-等待两个 Agent 完成后继续。
+请分析 src/core/src/ 目录（边界 A），重点识别：
+1. Rust 核心架构约束：模块结构、公开接口、依赖关系
+2. tokio 异步模式：任务调度方式、channel 使用、并发控制
+3. 错误类型定义：自定义错误类型、错误传播链、panic 策略
+4. IPC 接口定义：Unix socket/stdio 协议、消息序列化格式
+5. 现有测试模式：测试文件结构、mock 方式、断言风格
+
+输出 JSON 格式约束集，包含 existing_structures、existing_conventions、constraints_discovered、risks 字段。
+CODEX_TASK
+```
+
+**Bash 调用 2（Gemini 前端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/gemini-analyzer.md
+
+你正在探索 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的前端/Plugin 约束边界。
+
+请分析 src/plugin/src/ 目录（边界 B），重点识别：
+1. TS Plugin 架构约束：hook 注册方式、skill 加载机制、router 策略
+2. hook 生命周期：各 hook 的调用时机、副作用限制、异步处理方式
+3. skill 格式约束：SKILL.md 格式规范、参数传递、输出格式
+4. IPC 协议对齐：Plugin 调用 Rust 核心的方式、消息格式约定
+5. 现有测试模式：测试文件结构、mock 策略、集成测试方式
+
+输出 JSON 格式约束集，包含 existing_structures、existing_conventions、constraints_discovered、risks 字段。
+GEMINI_TASK
+```
+
+等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
+
+**失败处理**：若 wrapper 退出码非 0（如 CLI 不可用退出码 127），log 错误并继续执行（用 Claude 自身分析替代），不终止整个流程。
 
 ### Step 4: 聚合与综合
 

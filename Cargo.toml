@@ -16,6 +16,7 @@ members = [
     "crates/ghostcode-router",
     "crates/ghostcode-web",
     "crates/ghostcode-config",
+    "crates/ghostcode-wrapper",
 ]
 
 [workspace.package]

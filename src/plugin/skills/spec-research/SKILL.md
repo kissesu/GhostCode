@@ -74,13 +74,24 @@ grep -r "Command\|Response\|Event" src/core/src/ --include="*.rs" -l
 
 ### Step 3: 并行多模型探索
 
-**CRITICAL**: 同时发起多个后台探索，不可串行等待。
+**CRITICAL**: 必须在一条消息中同时发起两个 Bash 后台调用，run_in_background: true。
 
-每个探索 Agent 输出统一模板（JSON 格式）：
+**Bash 调用 1（Codex 后端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/codex-analyzer.md
 
-```json
+你正在分析 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的 Rust 核心边界约束。
+
+请探索 src/core/src/ 目录，重点分析：
+1. 内存安全约束：所有权规则、借用检查、生命周期约束
+2. 并发约束：tokio 异步模式、任务调度、共享状态处理
+3. 错误处理约束：错误类型定义、传播方式、Result/Option 使用规范
+4. IPC 协议边界：Unix socket/stdio 消息格式、序列化约束
+
+输出 JSON 格式约束集：
 {
-  "module_name": "探索的上下文边界",
+  "module_name": "Rust 核心边界",
   "existing_structures": ["发现的关键数据结构/函数"],
   "existing_conventions": ["使用中的规范/模式"],
   "constraints_discovered": ["限制解决方案空间的硬约束"],
@@ -89,10 +100,39 @@ grep -r "Command\|Response\|Event" src/core/src/ --include="*.rs" -l
   "risks": ["潜在阻碍"],
   "success_criteria_hints": ["可观测的成功行为"]
 }
+CODEX_TASK
 ```
 
-Claude/Codex 路由：探索 Rust 核心边界（内存安全、并发、错误处理约束）。
-Gemini 路由：探索 TS Plugin 边界（类型安全、hook 生命周期、skill 格式约束）。
+**Bash 调用 2（Gemini 前端分析）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_TASK'
+ROLE_FILE: ~/.ghostcode/prompts/gemini-analyzer.md
+
+你正在分析 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的 TS Plugin 边界约束。
+
+请探索 src/plugin/src/ 目录，重点分析：
+1. 类型安全约束：TypeScript 类型定义、接口规范、类型推断限制
+2. hook 生命周期约束：Claude Code Plugin hook 的调用顺序、生命周期、副作用限制
+3. skill 格式约束：SKILL.md 格式规范、参数传递方式、输出格式要求
+4. IPC 协议对齐：与 Rust 核心的消息格式对齐、JSON-RPC 结构约束
+
+输出 JSON 格式约束集：
+{
+  "module_name": "TS Plugin 边界",
+  "existing_structures": ["发现的关键数据结构/函数"],
+  "existing_conventions": ["使用中的规范/模式"],
+  "constraints_discovered": ["限制解决方案空间的硬约束"],
+  "open_questions": ["需要用户确认的歧义"],
+  "dependencies": ["跨模块依赖关系"],
+  "risks": ["潜在阻碍"],
+  "success_criteria_hints": ["可观测的成功行为"]
+}
+GEMINI_TASK
+```
+
+等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
+
+**失败处理**：若 wrapper 退出码非 0（如 CLI 不可用退出码 127），log 错误并继续执行（用 Claude 自身分析替代），不终止整个流程。
 
 ### Step 4: 聚合与综合
 
