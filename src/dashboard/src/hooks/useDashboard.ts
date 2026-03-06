@@ -4,7 +4,7 @@
  *
  * 业务逻辑说明：
  * 1. 初始化时通过 REST 拉取 DashboardSnapshot（含最近 20 条时间线和 Agent 列表）
- * 2. 通过 SSE 订阅实时事件流，将新事件追加到 timeline
+ * 2. 通过 SSE 订阅实时事件流，将新事件插入到 timeline 头部（最新在前）
  * 3. 暴露加载状态、错误信息和聚合后的 snapshot 数据
  *
  * @author Atlas.oi
@@ -58,6 +58,8 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
   const [error, setError] = useState<string | null>(null);
 
   // 用于去重的已知事件 ID 集合
+  // W4-review：Set 有清理机制，在 loadInitialData 时重置，
+  // 且超过 MAX_KNOWN_IDS 时清理最早一半（防止长时间运行的页面内存泄漏）
   const knownEventIdsRef = useRef<Set<string>>(new Set());
 
   // SSE 实时事件流
@@ -107,10 +109,24 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
    *
    * 业务逻辑说明：
    * 过滤掉已存在于快照中的事件（按 id 去重），
-   * 将新事件追加到 timeline 尾部
+   * 将新事件插入到 timeline 头部（最新在前）
    */
   useEffect(() => {
     if (sseEvents.length === 0) return;
+
+    // W4-review：防止去重 Set 无限增长
+    // 超过 2000 个 ID 时，清理最早的一半
+    // Set 迭代顺序 = 插入顺序，先迭代的是最早插入的
+    const MAX_KNOWN_IDS = 2000;
+    if (knownEventIdsRef.current.size > MAX_KNOWN_IDS) {
+      const idsToRemove = Math.floor(knownEventIdsRef.current.size / 2);
+      let removed = 0;
+      for (const id of knownEventIdsRef.current) {
+        if (removed >= idsToRemove) break;
+        knownEventIdsRef.current.delete(id);
+        removed++;
+      }
+    }
 
     // 找出尚未在 timeline 中的新事件
     const newItems: LedgerTimelineItem[] = [];
@@ -123,16 +139,23 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
 
     if (newItems.length === 0) return;
 
-    // 追加新事件并更新计数
+    // W4 修复：新事件显式按时间戳倒序排序，不依赖 SSE 到达顺序
+    newItems.sort((a, b) => {
+      const tsA = new Date(a.ts).getTime();
+      const tsB = new Date(b.ts).getTime();
+      return tsB - tsA;
+    });
+
+    // 新事件插入头部（最新事件在最前，与 Timeline 倒序显示一致）
     // 使用函数式更新（prev =>），不依赖外部 snapshot 变量
-    // 限制 timeline 最多保留 500 条，防止长时间运行导致内存溢出
+    // 限制 timeline 最多保留 500 条，截断尾部旧事件
     const MAX_TIMELINE_ITEMS = 500;
     setSnapshot((prev) => {
       if (!prev) return prev;
-      const merged = [...prev.recent_timeline, ...newItems];
+      const merged = [...newItems, ...prev.recent_timeline];
       return {
         ...prev,
-        recent_timeline: merged.length > MAX_TIMELINE_ITEMS ? merged.slice(-MAX_TIMELINE_ITEMS) : merged,
+        recent_timeline: merged.length > MAX_TIMELINE_ITEMS ? merged.slice(0, MAX_TIMELINE_ITEMS) : merged,
         total_events: prev.total_events + newItems.length,
       };
     });
@@ -151,7 +174,9 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
     if (sseEvents.length === 0 || !groupId) return;
 
     const lastEvent = sseEvents[sseEvents.length - 1];
-    const agentRelatedKinds = ['actor_joined', 'actor_left', 'heartbeat', 'ActorJoined', 'ActorLeft', 'Heartbeat'];
+    // D3 修复：与 ghostcode-types EventKind serde rename 对齐（dot notation）
+    // 旧值使用 CCCC 风格事件名（actor_joined 等），与账本实际 kind 不匹配
+    const agentRelatedKinds = ['actor.start', 'actor.stop', 'actor.add', 'actor.remove'];
 
     if (agentRelatedKinds.includes(lastEvent.kind)) {
       // 重新拉取 Agent 状态（轻量级操作）

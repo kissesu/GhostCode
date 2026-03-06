@@ -36,6 +36,10 @@ pub struct AgentStatusView {
     pub status: String,
     /// 最后活动时间戳
     pub last_seen: Option<String>,
+    /// Agent 显示名称（从 ActorStart 事件的 display_name 字段取值，如 "Code Reviewer"）
+    pub display_name: Option<String>,
+    /// Agent 类型标识（原始值，如 "feature-dev:code-reviewer"）
+    pub agent_type: Option<String>,
 }
 
 /// Dashboard 快照（聚合视图）

@@ -22,6 +22,14 @@ pub fn schema() -> serde_json::Value {
                 "actor_id": {
                     "type": "string",
                     "description": "ID of the actor to start (required)"
+                },
+                "display_name": {
+                    "type": "string",
+                    "description": "Human-readable display name for the actor (optional)"
+                },
+                "agent_type": {
+                    "type": "string",
+                    "description": "Agent type identifier, e.g. 'feature-dev:code-reviewer' (optional)"
                 }
             },
             "required": ["actor_id"]
@@ -40,14 +48,24 @@ pub async fn execute(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ToolError::MissingParam("actor_id".to_string()))?;
 
-    let req = DaemonRequest::new(
-        "actor_start",
-        serde_json::json!({
-            "group_id": ctx.group_id,
-            "actor_id": actor_id,
-            "by": ctx.actor_id
-        }),
-    );
+    // 提取可选的 display_name 和 agent_type 参数
+    let display_name = args.get("display_name").and_then(|v| v.as_str());
+    let agent_type = args.get("agent_type").and_then(|v| v.as_str());
+
+    let mut req_args = serde_json::json!({
+        "group_id": ctx.group_id,
+        "actor_id": actor_id,
+        "by": ctx.actor_id
+    });
+    // 仅在有值时附加可选字段，避免发送 null
+    if let Some(dn) = display_name {
+        req_args["display_name"] = serde_json::Value::String(dn.to_string());
+    }
+    if let Some(at) = agent_type {
+        req_args["agent_type"] = serde_json::Value::String(at.to_string());
+    }
+
+    let req = DaemonRequest::new("actor_start", req_args);
 
     let result = call_daemon(&ctx.daemon_addr, req).await?;
     Ok(result)

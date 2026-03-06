@@ -31,106 +31,163 @@ pub type Result<T> = std::result::Result<T, LifecycleError>;
 /// 启动 Actor
 ///
 /// 业务逻辑：
-/// 1. 从磁盘加载 group.yaml，验证 group 和 actor 存在
-/// 2. 检查 sessions 中无重复 session（幂等保护）
-/// 3. 创建 HeadlessSession 并插入全局 sessions 表
-/// 4. 更新 group.yaml 中 actor.running = true 并持久化
-/// 5. 写入 ActorStart 事件到账本
+/// 1. 获取写锁，保证整个 start 流程的原子性（C1 修复：消除 double-check 竞态窗口）
+/// 2. 从磁盘加载 group.yaml，验证 group 存在
+/// 3. 若 actor 未注册，自动注册到 group（D1 修复：SubagentStart Hook 传入的临时 ID 无需预注册）
+/// 4. 检查 sessions 中无重复 session（幂等保护）
+/// 5. 磁盘持久化：更新 group.yaml + 写入 ActorStart 事件
+/// 6. 内存写入：创建 HeadlessSession 并插入 sessions 表
 ///
 /// @param state - 共享应用状态
 /// @param group_id - Group ID
 /// @param actor_id - Actor ID
+/// @param display_name - 人类可读显示名称（可选，来自 SubagentStart Hook）
+/// @param agent_type - Agent 类型标识（可选，如 "feature-dev:code-reviewer"）
 /// @return 创建的 HeadlessState 快照
 pub async fn start_actor(
     state: &AppState,
     group_id: &str,
     actor_id: &str,
+    display_name: Option<&str>,
+    agent_type: Option<&str>,
 ) -> Result<HeadlessState> {
     // ============================================
-    // 第一步：加载 group，验证 actor 存在
+    // 第一步：获取写锁（C1 修复）
+    // 整个 start 流程在单一写锁内完成，消除读锁→写锁之间的竞态窗口
+    // 两个并发 start 请求不会同时通过检查并各自写磁盘
     // ============================================
-    let group_dir = state.groups_dir.join(group_id);
-    let mut group = load_group(&group_dir).map_err(|_| LifecycleError::GroupNotFound(group_id.to_string()))?;
+    let mut sessions = state.sessions.write().await;
 
-    // 验证 actor 在 group 中存在
-    if find_actor(&group, actor_id).is_none() {
-        return Err(LifecycleError::ActorNotFound {
+    // ============================================
+    // 第二步：幂等检查（在写锁内，无竞态）
+    // ============================================
+    let key = (group_id.to_string(), actor_id.to_string());
+    if sessions.contains_key(&key) {
+        return Err(LifecycleError::SessionAlreadyExists {
             group_id: group_id.to_string(),
             actor_id: actor_id.to_string(),
         });
     }
 
     // ============================================
-    // 第二步：先完成磁盘持久化，再写入内存
-    // 磁盘先于内存：若磁盘写入失败，内存状态不会被污染
+    // 第三步：准备磁盘 I/O 所需的 owned 数据
+    // 所有参数转为 owned 类型，供 spawn_blocking 闭包捕获
     // ============================================
+    let group_dir = state.groups_dir.join(group_id);
+    let actor_id_owned = actor_id.to_string();
+    let group_id_owned = group_id.to_string();
+    let display_name_owned = display_name.map(|s| s.to_string());
+    let agent_type_owned = agent_type.map(|s| s.to_string());
 
-    // 更新 group.yaml 中 actor.running = true
-    for actor in &mut group.actors {
-        if actor.actor_id == actor_id {
-            actor.running = true;
-            break;
+    // ============================================
+    // 第四步：磁盘 I/O 移入 spawn_blocking（C1-review 修复）
+    // 同步文件操作（load_group、fs::write、append_event）在阻塞线程池执行，
+    // 避免阻塞 tokio 工作线程。写锁跨 .await 点持有是 tokio::sync::RwLock
+    // 的设计用途，保证原子性不受影响。
+    //
+    // 权衡说明：
+    // - 写锁仍在 spawn_blocking 期间持有，其他 sessions 操作会等待
+    // - 但 tokio 工作线程不再被阻塞，其他非 sessions 的异步任务可正常调度
+    // - 对于本地开发工具（<10 并发 Actor），这是最佳平衡点
+    // ============================================
+    let group_dir_clone = group_dir.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        // 加载 group，自动注册未知 actor（D1 修复）
+        let mut group = load_group(&group_dir_clone)
+            .map_err(|_| LifecycleError::GroupNotFound(group_id_owned.clone()))?;
+
+        if find_actor(&group, &actor_id_owned).is_none() {
+            // 自动注册：SubagentStart Hook 传入的临时 Agent，无需预先 actor_add
+            use ghostcode_types::actor::{ActorInfo, ActorRole, RuntimeKind};
+            let new_actor = ActorInfo {
+                actor_id: actor_id_owned.clone(),
+                display_name: display_name_owned.as_deref().unwrap_or(&actor_id_owned).to_string(),
+                role: ActorRole::Peer,
+                runtime: RuntimeKind::Custom("claude-code".to_string()),
+                running: false,
+                pid: None,
+            };
+            group.actors.push(new_actor);
+            tracing::info!(
+                actor_id = actor_id_owned.as_str(),
+                display_name = ?display_name_owned,
+                "Actor 未预注册，已自动添加到 group"
+            );
         }
-    }
-    let yaml = serde_yaml::to_string(&group)?;
-    let yaml_path = group_dir.join("group.yaml");
-    std::fs::write(&yaml_path, yaml)?;
 
-    // 写入 ActorStart 事件到账本
-    let ledger_path = group_dir.join("state/ledger/ledger.jsonl");
-    let lock_path = group_dir.join("state/ledger/ledger.lock");
-    let event = Event::new(
-        EventKind::ActorStart,
-        group_id,
-        "default",
-        actor_id,
-        serde_json::json!({ "actor_id": actor_id }),
-    );
-    append_event(&ledger_path, &lock_path, &event)?;
+        // 磁盘持久化（group.yaml + 账本事件）
+        // 磁盘先于内存写入：若磁盘写入失败，内存状态不会被污染
+        for actor in &mut group.actors {
+            if actor.actor_id == actor_id_owned {
+                actor.running = true;
+                break;
+            }
+        }
+        let yaml = serde_yaml::to_string(&group)?;
+        let yaml_path = group_dir_clone.join("group.yaml");
+        std::fs::write(&yaml_path, yaml)?;
+
+        // 写入 ActorStart 事件到账本（携带可选的 display_name 和 agent_type）
+        let ledger_path = group_dir_clone.join("state/ledger/ledger.jsonl");
+        let lock_path = group_dir_clone.join("state/ledger/ledger.lock");
+        let mut event_data = serde_json::json!({ "actor_id": actor_id_owned });
+        if let Some(ref name) = display_name_owned {
+            event_data["display_name"] = serde_json::Value::String(name.clone());
+        }
+        if let Some(ref atype) = agent_type_owned {
+            event_data["agent_type"] = serde_json::Value::String(atype.clone());
+        }
+        let event = Event::new(
+            EventKind::ActorStart,
+            &group_id_owned,
+            "default",
+            &actor_id_owned,
+            event_data,
+        );
+        append_event(&ledger_path, &lock_path, &event)?;
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| LifecycleError::Io(std::io::Error::other(
+        format!("spawn_blocking 任务 panic: {}", e)
+    )))??;
 
     // ============================================
-    // 第三步：原子检查+插入（单写锁区间，消除竞态窗口）
-    // 持久化已成功，此时才写入内存 sessions 表
+    // 第五步：内存写入（已在写锁内，无需二次获取）
     // ============================================
     let session = HeadlessSession::new(group_id, actor_id);
     let state_snapshot = session.to_state();
-
-    {
-        let mut sessions = state.sessions.write().await;
-        let key = (group_id.to_string(), actor_id.to_string());
-        if sessions.contains_key(&key) {
-            return Err(LifecycleError::SessionAlreadyExists {
-                group_id: group_id.to_string(),
-                actor_id: actor_id.to_string(),
-            });
-        }
-        sessions.insert(key, session);
-    }
+    sessions.insert(key, session);
 
     Ok(state_snapshot)
 }
 
 /// 停止 Actor（幂等操作）
 ///
-/// 业务逻辑：
-/// 1. 从 sessions 移除（不存在也 OK，幂等）
-/// 2. 从磁盘加载 group，更新 actor.running = false 并持久化
-/// 3. 写入 ActorStop 事件到账本
+/// 业务逻辑（C2 修复：磁盘先于内存）：
+/// 1. 磁盘持久化：加载 group.yaml → 更新 running=false → 写回磁盘
+/// 2. 写入 ActorStop 事件到账本
+/// 3. 磁盘成功后，再从内存 sessions 移除
+///
+/// 这样当磁盘写入失败时，内存状态不会被提前修改，
+/// Daemon 重启后不会错误恢复已停止的 Actor
+///
+/// W1-review 锁策略说明：
+/// stop_actor 的磁盘操作在写锁之外执行，与 start_actor（锁内 spawn_blocking）策略不同。
+/// 这是有意为之的设计差异：
+/// - start 需要原子性：幂等检查→磁盘→内存 必须在同一锁内，防止并发 start 竞态
+/// - stop 是幂等操作：磁盘写入失败时内存不受影响，重试 stop 即可恢复一致性
+/// - stop 的写锁仅保护内存 sessions.remove，持有时间极短（微秒级）
+/// - 这避免了 stop 操作在写锁内做磁盘 I/O 的不必要阻塞
 ///
 /// @param state - 共享应用状态
 /// @param group_id - Group ID
 /// @param actor_id - Actor ID
 pub async fn stop_actor(state: &AppState, group_id: &str, actor_id: &str) -> Result<()> {
     // ============================================
-    // 第一步：从 sessions 移除（不存在也 OK，幂等）
-    // ============================================
-    {
-        let mut sessions = state.sessions.write().await;
-        sessions.remove(&(group_id.to_string(), actor_id.to_string()));
-    }
-
-    // ============================================
-    // 第二步：加载 group，更新 actor.running = false
+    // 第一步：磁盘持久化（先于内存操作）
+    // 加载 group.yaml → 更新 actor.running = false → 写回
     // group 不存在时返回错误，actor 不存在时不更新（幂等）
     // ============================================
     let group_dir = state.groups_dir.join(group_id);
@@ -147,7 +204,7 @@ pub async fn stop_actor(state: &AppState, group_id: &str, actor_id: &str) -> Res
     std::fs::write(&yaml_path, yaml)?;
 
     // ============================================
-    // 第三步：写入 ActorStop 事件到账本
+    // 第二步：写入 ActorStop 事件到账本
     // ============================================
     let ledger_path = group_dir.join("state/ledger/ledger.jsonl");
     let lock_path = group_dir.join("state/ledger/ledger.lock");
@@ -159,6 +216,14 @@ pub async fn stop_actor(state: &AppState, group_id: &str, actor_id: &str) -> Res
         serde_json::json!({ "actor_id": actor_id }),
     );
     append_event(&ledger_path, &lock_path, &event)?;
+
+    // ============================================
+    // 第三步：磁盘成功后，从内存 sessions 移除（不存在也 OK，幂等）
+    // ============================================
+    {
+        let mut sessions = state.sessions.write().await;
+        sessions.remove(&(group_id.to_string(), actor_id.to_string()));
+    }
 
     Ok(())
 }
@@ -278,9 +343,13 @@ pub fn spawn_heartbeat_monitor(state: Arc<AppState>, timeout_secs: u64) {
             // ============================================
             for (group_id, actor_id) in timed_out_keys {
                 // 写锁移除 session（等效于 stop_actor 的内存清理）
+                // W6 修复：检查 remove 返回值，若已被其他路径移除则跳过后续操作
                 {
                     let mut sessions = state.sessions.write().await;
-                    sessions.remove(&(group_id.clone(), actor_id.clone()));
+                    if sessions.remove(&(group_id.clone(), actor_id.clone())).is_none() {
+                        // 已被 stop_actor 或其他心跳周期移除，跳过重复处理
+                        continue;
+                    }
                 }
 
                 // 更新 group.yaml 中 actor.running = false

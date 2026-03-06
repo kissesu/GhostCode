@@ -56,12 +56,20 @@ fn event_to_timeline_item(event: &Event) -> LedgerTimelineItem {
 // 公共查询函数
 // ============================================
 
+/// 账本事件最大加载数量
+/// 防止异常大账本导致 OOM，超出时截断尾部旧事件（保留最新）
+/// 10000 条事件约占 5-10 MB 内存，对开发工具场景绰绰有余
+const MAX_LEDGER_EVENTS: usize = 10_000;
+
 /// 分页读取账本时间线
 ///
 /// 业务逻辑：
 /// 1. 顺序读取账本所有事件，转换为 LedgerTimelineItem
 /// 2. 根据 cursor（事件 id）定位分页起点
 /// 3. 返回 page_size 条记录 + 下一页游标
+///
+/// W2-review 安全上限：最多加载 MAX_LEDGER_EVENTS 条事件，
+/// 超出时仅保留最新的事件，total 仍反映实际总数
 ///
 /// @param ledger_path - 账本文件路径
 /// @param page_size - 每页条目数（最大 100）
@@ -75,10 +83,20 @@ pub fn timeline_page(
     // 限制每页最大 100 条，防止单次查询过大
     let page_size = page_size.min(100);
 
-    // 全量读取账本事件到内存（对于 Dashboard 场景，账本规模可控）
-    let items_all: Vec<Event> = iter_events(ledger_path)?
+    // 全量读取账本事件到内存
+    // W2-review：添加安全上限，防止异常大账本导致 OOM
+    let mut items_all: Vec<Event> = iter_events(ledger_path)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let total = items_all.len() as u64;
+
+    // 超过上限时截断：丢弃头部旧事件，保留最新的 MAX_LEDGER_EVENTS 条
+    if items_all.len() > MAX_LEDGER_EVENTS {
+        let skip = items_all.len() - MAX_LEDGER_EVENTS;
+        items_all.drain(..skip);
+    }
+
+    // 倒序排列：最新事件在前（Dashboard 时间线 UX 要求）
+    items_all.reverse();
 
     // 确定分页起始位置：如有 cursor 则从该 id 的下一条开始
     let start = if let Some(ref cursor_id) = cursor {
@@ -131,12 +149,24 @@ pub fn aggregate_agent_status(ledger_path: &Path) -> Result<Vec<AgentStatusView>
     // 记录每个 actor 最后一次事件的 (时间戳, 事件类型)
     let mut last_event: HashMap<String, (String, ghostcode_types::event::EventKind)> =
         HashMap::new();
+    // 缓存 actor_id -> (display_name, agent_type)，从 ActorStart 事件中提取
+    // 注意：键必须与 last_event 的键保持一致（都使用 event.by），
+    // 否则后续查找时 actor_meta.get(&actor_id) 会因键不对齐而静默返回 None
+    let mut actor_meta: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
 
     for event in iter_events(ledger_path)? {
         let event = event?;
         // 跳过 "user" 触发者和空字符串，只统计 Actor
         if event.by != "user" && !event.by.is_empty() {
             last_event.insert(event.by.clone(), (event.ts.clone(), event.kind.clone()));
+
+            // 从 ActorStart 事件的 data 字段提取 display_name 和 agent_type
+            // 使用 event.by 作为键（与 last_event 对齐），而非 data["actor_id"]
+            if event.kind == ghostcode_types::event::EventKind::ActorStart {
+                let dn = event.data.get("display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let at = event.data.get("agent_type").and_then(|v| v.as_str()).map(|s| s.to_string());
+                actor_meta.insert(event.by.clone(), (dn, at));
+            }
         }
     }
 
@@ -149,11 +179,15 @@ pub fn aggregate_agent_status(ledger_path: &Path) -> Result<Vec<AgentStatusView>
                 ghostcode_types::event::EventKind::ActorRemove => "removed".to_string(),
                 _ => "active".to_string(),
             };
+            // 从缓存中取 display_name 和 agent_type
+            let (display_name, agent_type_val) = actor_meta.get(&actor_id).cloned().unwrap_or((None, None));
             AgentStatusView {
                 runtime: infer_runtime(&actor_id),
                 actor_id,
                 status,
                 last_seen: Some(last_ts),
+                display_name,
+                agent_type: agent_type_val,
             }
         })
         .collect();
@@ -196,16 +230,17 @@ pub fn build_history_projection(ledger_path: &Path, group_id: &str) -> Result<Da
     let agents = aggregate_agent_status(ledger_path)?;
 
     // W2 修复：读取全部事件，取最后 20 条（最近的），而非从头取 20 条（最早的）
+    // W2-review：添加安全上限，与 timeline_page 保持一致
     let all_events: Vec<Event> = iter_events(ledger_path)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let total_events = all_events.len() as u64;
 
-    // 取最后 20 条（最近的事件），保持时间升序输出
+    // 取最后 20 条（最近的事件），倒序输出（最新在前，Dashboard UX 要求）
+    // 注意：此处仅取 20 条，无需截断全量数据，直接 rev().take(20) 即可
     let recent_timeline: Vec<LedgerTimelineItem> = all_events
         .iter()
         .rev()
         .take(20)
-        .rev() // 恢复时间升序
         .map(event_to_timeline_item)
         .collect();
 

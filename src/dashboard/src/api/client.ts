@@ -41,6 +41,10 @@ export interface AgentStatusView {
   status: 'active' | 'stopped' | 'unknown';
   /** 最后活动时间戳 */
   last_seen: string | null;
+  /** Agent 显示名称（从 SubagentStart 事件的 agent_type 生成，如 "Code Reviewer"） */
+  display_name?: string;
+  /** Agent 类型标识（原始值，如 "feature-dev:code-reviewer"） */
+  agent_type?: string;
 }
 
 /** Dashboard 快照（聚合视图） */

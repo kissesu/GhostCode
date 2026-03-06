@@ -73,6 +73,10 @@ function formatLastSeen(lastSeen: string | null): string {
  * 单个 Agent 状态卡片
  */
 function AgentCard({ agent }: { agent: AgentStatusView }) {
+  // 显示标签：优先 agent_type（如 "feature-dev:code-reviewer"），回退到 runtime
+  const displayLabel = agent.agent_type ?? agent.runtime;
+  // 颜色与显示标签对齐：有 agent_type 时基于 runtime 推断颜色（保持与后端一致），
+  // 无 agent_type 时直接用 runtime 颜色
   const runtimeColor = getRuntimeColor(agent.runtime);
 
   return (
@@ -80,7 +84,7 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
       className="card p-3 flex flex-col gap-2"
       data-testid="agent-card"
     >
-      {/* 头部：状态指示 + Actor ID */}
+      {/* 头部：状态指示 + 显示名称（优先 display_name，回退到 actor_id） */}
       <div className="flex items-center gap-2">
         <span className={`status-dot ${agent.status}`} data-testid="status-dot" />
         <span
@@ -88,11 +92,11 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
           style={{ color: 'var(--text-primary)' }}
           title={agent.actor_id}
         >
-          {agent.actor_id}
+          {agent.display_name || agent.actor_id}
         </span>
       </div>
 
-      {/* Runtime 类型标签 */}
+      {/* Runtime / Agent 类型标签 */}
       <div className="flex items-center gap-2">
         <span
           className="text-xs px-1.5 py-0.5 rounded font-mono"
@@ -102,7 +106,7 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
             border: `1px solid ${runtimeColor}44`,
           }}
         >
-          {agent.runtime}
+          {displayLabel}
         </span>
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
           {agent.status}
@@ -134,11 +138,16 @@ export function AgentGraph({ agents }: AgentGraphProps) {
     );
   }
 
-  // 按状态排序：active > unknown > stopped
+  // 排序规则：1) 状态优先（active > unknown > stopped）2) 同状态按最后活跃时间倒序
   const sortedAgents = [...agents].sort((a, b) => {
     const orderA = STATUS_ORDER[a.status] ?? 3;
     const orderB = STATUS_ORDER[b.status] ?? 3;
-    return orderA - orderB;
+    if (orderA !== orderB) return orderA - orderB;
+    // C4 修复：使用数值比较替代字符串比较
+    // 字符串 localeCompare 对 ISO 8601 时间戳在跨时区或不同格式下不可靠
+    const tsA = a.last_seen ? new Date(a.last_seen).getTime() : 0;
+    const tsB = b.last_seen ? new Date(b.last_seen).getTime() : 0;
+    return tsB - tsA;
   });
 
   const activeCount = agents.filter((a) => a.status === 'active').length;

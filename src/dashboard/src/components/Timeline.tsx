@@ -3,8 +3,8 @@
  * @description 纵向事件时间轴组件，展示账本事件流
  *
  * 业务逻辑说明：
- * 1. 从底部向上追加新事件，最新事件在底部
- * 2. 新事件到达时自动滚动到底部
+ * 1. 前端按时间戳倒序排列，最新事件在顶部
+ * 2. 新事件到达时自动滚动到顶部
  * 3. 每个事件显示：kind 标签（彩色）、by（Actor）、ts（相对时间）、data_summary
  *
  * @author Atlas.oi
@@ -16,7 +16,7 @@ import type { LedgerTimelineItem } from '../api/client';
 
 /** Timeline 组件属性 */
 interface TimelineProps {
-  /** 事件列表（按时间顺序排列，最新在末尾） */
+  /** 事件列表（渲染时自动按时间倒序排列，最新在顶部） */
   items: LedgerTimelineItem[];
 }
 
@@ -135,16 +135,21 @@ function TimelineItem({ item }: { item: LedgerTimelineItem }) {
  * @param items - 事件列表
  */
 export function Timeline({ items }: TimelineProps) {
-  // 用于自动滚动到底部的引用元素
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // C3 修复：用 containerRef 绑定到外层滚动容器，替代 topRef + scrollIntoView
+  // scrollIntoView 会影响页面级滚动，containerRef.scrollTo 仅控制 Timeline 内部滚动
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // 新事件到达时自动滚动到底部
-  // I1 修复：使用防抖（100ms）避免高频事件触发频繁滚动导致视觉抖动
+  // 新事件到达时，仅在用户接近顶部（scrollTop < 100px）时自动滚动
+  // 避免用户正在浏览历史事件时被强制拉回顶部
   useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
     const timer = setTimeout(() => {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      if (container.scrollTop < 100) {
+        container.scrollTo({ top: 0, behavior: 'smooth' });
+      }
     }, 100);
-    // 清理上一次未执行的滚动定时器，确保只执行最后一次
     return () => clearTimeout(timer);
   }, [items.length]);
 
@@ -159,13 +164,21 @@ export function Timeline({ items }: TimelineProps) {
     );
   }
 
+  // 按时间戳倒序排列（最新事件在顶部）
+  // 后端 + SSE 层已保证倒序，此处作为防御性排序保底
+  // W5-review：使用数值比较替代 localeCompare，与 AgentGraph 的 C4 修复保持一致
+  // localeCompare 对含时区偏移的 ISO 8601 时间戳不可靠
+  const sortedItems = [...items].sort((a, b) => {
+    const tsA = new Date(a.ts).getTime();
+    const tsB = new Date(b.ts).getTime();
+    return tsB - tsA;
+  });
+
   return (
-    <div className="flex flex-col h-full overflow-y-auto" data-testid="timeline">
-      {items.map((item) => (
+    <div ref={containerRef} className="flex flex-col h-full overflow-y-auto" data-testid="timeline">
+      {sortedItems.map((item) => (
         <TimelineItem key={item.id} item={item} />
       ))}
-      {/* 滚动锚点 */}
-      <div ref={bottomRef} />
     </div>
   );
 }

@@ -216,7 +216,28 @@ async fn handle_actor_start(state: &AppState, args: &serde_json::Value) -> Daemo
     if let Err(resp) = validate_id(group_id, "group_id") { return resp; }
     if let Err(resp) = validate_id(actor_id, "actor_id") { return resp; }
 
-    match lifecycle::start_actor(state, group_id, actor_id).await {
+    // 提取可选的 display_name 和 agent_type（用于 Dashboard 友好显示）
+    // W2 修复：超长值返回明确错误而非静默截断，让调用方感知问题
+    let display_name = args["display_name"].as_str();
+    if let Some(name) = display_name {
+        if name.len() > 128 {
+            return DaemonResponse::err(
+                "INVALID_ARGS",
+                format!("display_name 超出长度限制（最大 128 字符，实际 {} 字符）", name.len()),
+            );
+        }
+    }
+    let agent_type = args["agent_type"].as_str();
+    if let Some(atype) = agent_type {
+        if atype.len() > 64 {
+            return DaemonResponse::err(
+                "INVALID_ARGS",
+                format!("agent_type 超出长度限制（最大 64 字符，实际 {} 字符）", atype.len()),
+            );
+        }
+    }
+
+    match lifecycle::start_actor(state, group_id, actor_id, display_name, agent_type).await {
         Ok(session_state) => DaemonResponse::ok(serde_json::to_value(session_state).unwrap_or_default()),
         Err(e) => DaemonResponse::err("LIFECYCLE_ERROR", e.to_string()),
     }

@@ -56,8 +56,8 @@ pub struct Args {
     #[arg(long, default_value = "http://localhost:5173")]
     pub cors_origin: Vec<String>,
 
-    /// 优雅关停等待秒数
-    #[arg(long, default_value = "10")]
+    /// 关停超时秒数（超时后强制终止所有连接包括 SSE）
+    #[arg(long, default_value = "3")]
     pub shutdown_grace_secs: u64,
 }
 
@@ -326,19 +326,37 @@ async fn kill_stale_listener(addr: SocketAddr) {
             continue;
         }
 
-        // 发送 SIGTERM
+        // 发送 SIGTERM（W1 修复：检查返回值并 log 错误）
+        //
+        // SAFETY 风险评估（C2-review）：
+        // libc::kill 存在理论上的 PID 重用竞态：从 lsof 获取 PID 到此处发送
+        // SIGTERM 的时间窗口内，目标进程可能退出且 PID 被 OS 回收分配给新进程。
+        // 实际风险极低，原因：
+        //   1. 上方 ps -o comm= 已验证进程名为 "ghostcode-web"
+        //   2. PID 重用需要短时间内大量进程创建/销毁（开发环境概率极低）
+        //   3. 即使误杀，也只是发送 SIGTERM（可被目标进程优雅处理）
+        //   4. 此代码仅在 ghostcode-web 启动时执行一次，非热路径
+        // 替代方案（pidfd/kqueue）对开发工具过度工程化，不采用。
         tracing::info!(
             "[GhostCode Web] 终止旧 ghostcode-web 进程 (PID {})",
             pid
         );
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+        let kill_result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if kill_result != 0 {
+            let errno = std::io::Error::last_os_error();
+            tracing::warn!(
+                "[GhostCode Web] 发送 SIGTERM 到 PID {} 失败: {}",
+                pid,
+                errno
+            );
+            continue;
         }
 
         // 等待进程退出（最多 3 秒）
         for _ in 0..30 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             // 检查进程是否已退出（kill 0 不发信号，只检查进程存在性）
+            // SAFETY：signal=0 不发送任何信号，仅检查 PID 是否存在且有权限访问
             let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
             if !alive {
                 tracing::info!("[GhostCode Web] 旧进程 (PID {}) 已退出", pid);
@@ -422,14 +440,45 @@ async fn main() -> Result<()> {
     tracing::info!("[GhostCode Web] CORS 源: {:?}", args.cors_origin);
 
     // ============================================
-    // 第六步：启动 HTTP 服务器，配置优雅关停
+    // 第六步：启动 HTTP 服务器，配置关停机制
+    //
+    // 关停流程：
+    // 1. 收到 Ctrl-C/SIGTERM → 停止接受新连接
+    // 2. 等待 shutdown_grace_secs 秒让进行中的 REST 请求完成
+    // 3. 超时后强制终止所有连接（包括 SSE 长连接）
+    //
+    // SSE 连接必须在关停时强制切断，否则端口无法释放，
+    // 下次启动会端口冲突。这是服务生命周期的基本闭环。
     // ============================================
-    axum::serve(listener, app)
-        .with_graceful_shutdown(wait_for_shutdown_signal())
-        .await
-        .context("HTTP 服务器异常退出")?;
+    let grace = Duration::from_secs(args.shutdown_grace_secs);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    tracing::info!("[GhostCode Web] 服务器已正常关停");
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            wait_for_shutdown_signal().await;
+            let _ = shutdown_tx.send(());
+        });
+
+    tokio::select! {
+        result = server => {
+            match result {
+                Ok(()) => tracing::info!("[GhostCode Web] 服务器已关停"),
+                Err(e) => {
+                    tracing::error!("[GhostCode Web] 服务器异常退出: {}", e);
+                    return Err(e.into());
+                }
+            }
+        }
+        _ = async {
+            let _ = shutdown_rx.await;
+            tokio::time::sleep(grace).await;
+        } => {
+            tracing::info!(
+                "[GhostCode Web] 关停超时（{}s），强制终止所有连接",
+                args.shutdown_grace_secs
+            );
+        }
+    }
 
     Ok(())
 }

@@ -26,7 +26,8 @@ fn write_events(path: &PathBuf, lock_path: &PathBuf, n: usize) {
 }
 
 proptest! {
-    /// 时间线顺序单调性：items 按 ts 升序排列（NDJSON 追加顺序）
+    /// 时间线顺序单调性：items 按 ts 倒序排列（最新事件在前）
+    /// 上一轮修复将 timeline_page 改为倒序返回，与 Dashboard 显示方向一致
     #[test]
     fn timeline_order_monotonic(n in 1usize..20) {
         let dir = TempDir::new().unwrap();
@@ -35,9 +36,9 @@ proptest! {
         write_events(&path, &lock_path, n);
         let page = timeline_page(&path, n + 10, None).unwrap();
         let tss: Vec<&str> = page.items.iter().map(|i| i.ts.as_str()).collect();
-        let mut sorted = tss.clone();
-        sorted.sort();
-        prop_assert_eq!(tss, sorted, "时间线应按 ts 升序排列");
+        let mut sorted_desc = tss.clone();
+        sorted_desc.sort_by(|a, b| b.cmp(a));
+        prop_assert_eq!(tss, sorted_desc, "时间线应按 ts 倒序排列（最新在前）");
     }
 
     /// 分页完整性：遍历所有分页，汇总 item 数 == 账本事件总数

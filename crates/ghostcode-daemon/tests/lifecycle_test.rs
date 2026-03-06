@@ -94,7 +94,7 @@ async fn start_actor_sets_idle() {
     let group_id = &group.group_id;
 
     // start_actor 返回状态快照
-    let snapshot = start_actor(&state, group_id, "claude")
+    let snapshot = start_actor(&state, group_id, "claude", None, None)
         .await
         .expect("start_actor 应成功");
 
@@ -116,7 +116,7 @@ async fn stop_actor_cleans_session() {
     let group_id = &group.group_id;
 
     // 先启动
-    start_actor(&state, group_id, "claude")
+    start_actor(&state, group_id, "claude", None, None)
         .await
         .expect("start_actor 应成功");
 
@@ -139,7 +139,7 @@ async fn stop_idempotent() {
     let group_id = &group.group_id;
 
     // 启动后停止
-    start_actor(&state, group_id, "claude")
+    start_actor(&state, group_id, "claude", None, None)
         .await
         .expect("start_actor 应成功");
     stop_actor(&state, group_id, "claude")
@@ -161,7 +161,7 @@ async fn status_transitions() {
     let group_id = &group.group_id;
 
     // 启动后初始 Idle
-    start_actor(&state, group_id, "claude")
+    start_actor(&state, group_id, "claude", None, None)
         .await
         .expect("start_actor 应成功");
 
@@ -267,7 +267,7 @@ async fn heartbeat_timeout_detection() {
     let group_id = &group.group_id;
 
     // 启动 actor
-    start_actor(&state, group_id, "claude")
+    start_actor(&state, group_id, "claude", None, None)
         .await
         .expect("start_actor 应成功");
 
@@ -339,23 +339,22 @@ async fn heartbeat_timeout_detection() {
     );
 }
 
-/// 测试 7：start_actor 使用不存在的 actor_id 应返回 ActorNotFound
+/// 测试 7：start_actor 使用未预注册的 actor_id 应自动注册并成功启动
 ///
-/// 验证：actor_id 不在 group 中时 start_actor 返回正确错误类型
+/// 验证：D1 修复后，未预注册的 actor 会被自动添加到 group 并启动，
+/// 而非返回 ActorNotFound 错误。这是 SubagentStart Hook 场景的核心需求。
 #[tokio::test]
-async fn start_nonexistent_actor_fails() {
+async fn start_nonexistent_actor_auto_registers() {
     let (_dir, state, group) = setup().await;
     let group_id = &group.group_id;
 
-    let result = start_actor(&state, group_id, "nonexistent-actor").await;
+    // 未预注册的 actor 应自动注册并成功启动
+    let result = start_actor(&state, group_id, "dynamic-agent-abc123", Some("Code Reviewer"), Some("feature-dev:code-reviewer")).await;
 
-    assert!(result.is_err(), "不存在的 actor 应返回错误");
-    match result.unwrap_err() {
-        LifecycleError::ActorNotFound { actor_id, .. } => {
-            assert_eq!(actor_id, "nonexistent-actor");
-        }
-        other => panic!("期望 ActorNotFound，实际: {:?}", other),
-    }
+    assert!(result.is_ok(), "未预注册的 actor 应自动注册并成功: {:?}", result.err());
+    let state_snapshot = result.unwrap();
+    assert_eq!(state_snapshot.group_id, *group_id);
+    assert_eq!(state_snapshot.actor_id, "dynamic-agent-abc123");
 }
 
 /// 测试 8：重复 start 同一 actor 应返回 SessionAlreadyExists
@@ -367,12 +366,12 @@ async fn start_duplicate_session_fails() {
     let group_id = &group.group_id;
 
     // 第一次 start 应成功
-    start_actor(&state, group_id, "claude")
+    start_actor(&state, group_id, "claude", None, None)
         .await
         .expect("第一次 start_actor 应成功");
 
     // 第二次 start 同一 actor 应失败
-    let result = start_actor(&state, group_id, "claude").await;
+    let result = start_actor(&state, group_id, "claude", None, None).await;
     assert!(result.is_err(), "重复 start 应返回错误");
     match result.unwrap_err() {
         LifecycleError::SessionAlreadyExists { actor_id, .. } => {
