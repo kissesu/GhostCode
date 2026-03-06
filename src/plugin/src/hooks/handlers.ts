@@ -140,25 +140,46 @@ export async function preToolUseHandler(_event: unknown): Promise<void> {
 /**
  * Stop Hook 处理器
  *
- * 业务逻辑：
- * 1. 调用心跳停止函数（如果心跳正在运行）
- * 2. 调用 stopDaemon() 关闭 Daemon
- * 3. 重置所有模块状态（为下次启动做准备）
+ * 业务逻辑（顺序严格固定）：
+ * 1. 停止心跳（如果心跳正在运行）
+ * 2. 调用 onSessionEnd()（Skill Learning，此时 Daemon 仍在运行，确保分析能访问 Daemon 状态）
+ * 3. 调用 releaseLease()（引用计数 -1，决定是否为最后一个会话）
+ * 4. 调用 stopDaemon()（仅 isLast=true 时，关闭 Daemon）
+ * 5. 重置所有模块状态（为下次启动做准备）
+ *
+ * 顺序约束：
+ * - onSessionEnd 必须在 stopDaemon 之前执行，确保 Daemon 仍在运行时完成 Skill Learning
+ * - onSessionEnd 失败不影响后续 releaseLease 和 stopDaemon（隔离错误边界）
  *
  * @param _event - Hook 事件（未使用，符合 HookHandler 类型签名）
  */
 export async function stopHandler(_event: unknown): Promise<void> {
-  // 停止心跳（如果正在运行）
+  // ============================================
+  // 第一步：停止心跳（如果正在运行）
+  // ============================================
   if (stopHeartbeat !== null) {
     stopHeartbeat();
     stopHeartbeat = null;
   }
 
-  // 重置 Daemon 缓存，下次调用 preToolUseHandler 会重新触发 ensureDaemon
-  daemonPromise = null;
+  // 注意：daemonPromise 的置空推迟到 stopDaemon 完成之后（第四步末尾）
+  // 防止竞态条件：若此处提前置空，并发的 preToolUseHandler 会在旧 Daemon 未关闭时启动新 Daemon
 
   // ============================================
-  // 基于 Session Lease 的安全停止逻辑
+  // 第二步：触发 Skill Learning 分析（onSessionEnd）
+  // 必须在 releaseLease 和 stopDaemon 之前调用，确保此时 Daemon 仍在运行
+  // onSessionEnd 失败不阻断后续 Stop 流程（隔离错误边界）
+  // ============================================
+  try {
+    const { onSessionEnd } = await import("../learner/index.js");
+    await onSessionEnd();
+  } catch {
+    // Skill Learning 失败不阻断 Stop 流程
+    console.error("[GhostCode] Skill Learning 分析失败，继续执行 Stop 流程");
+  }
+
+  // ============================================
+  // 第三步：基于 Session Lease 的安全停止逻辑
   // 多会话共享 Daemon 时，只有最后一个会话退出才真正关闭 Daemon
   //
   // 两种路径：
@@ -191,17 +212,19 @@ export async function stopHandler(_event: unknown): Promise<void> {
     }
   }
 
+  // ============================================
+  // 第四步：关闭 Daemon（仅最后一个会话时）
+  // ============================================
   if (shouldShutdown) {
     // 关闭 Daemon（幂等，未运行时静默返回）
     await stopDaemon();
-  }
 
-  // 触发 Skill Learning 分析（会话结束时提取可复用模式）
-  try {
-    const { onSessionEnd } = await import("../learner/index.js");
-    await onSessionEnd();
-  } catch {
-    // Skill Learning 失败不阻断 Stop 流程
+    // 重置 Daemon 缓存（仅在真正关闭 Daemon 后）
+    // 此处置空确保旧 Daemon 已完全停止，才允许 preToolUseHandler 启动新 Daemon
+    // 防止竞态条件：
+    // - 提前置空会导致 stopDaemon 执行期间并发触发 ensureDaemon
+    // - 非末尾会话（shouldShutdown=false）不应置空，否则下次工具调用会重复触发 ensureDaemon
+    daemonPromise = null;
   }
 }
 
@@ -235,14 +258,23 @@ export async function userPromptSubmitHandler(
 ): Promise<{ additionalContext: string } | undefined> {
   // ============================================
   // 第一步：从事件中提取用户 prompt 文本
-  // 防御性解析：事件格式不符时静默返回 undefined
+  // 防御性解析：支持两种事件格式（与 .mjs 脚本对齐）：
+  // - 嵌套格式：event.event.prompt（Claude Code 内部包装格式）
+  // - 顶层格式：event.prompt（标准格式）
+  // 两者均不存在时返回空字符串
   // ============================================
-  const prompt =
-    typeof event === "object" &&
-    event !== null &&
-    "prompt" in event
-      ? String((event as Record<string, unknown>).prompt)
-      : "";
+  const eventObj = typeof event === "object" && event !== null
+    ? (event as Record<string, unknown>)
+    : null;
+  const prompt = eventObj !== null
+    ? String(
+        (typeof eventObj["event"] === "object" && eventObj["event"] !== null
+          ? (eventObj["event"] as Record<string, unknown>)["prompt"]
+          : undefined) ??
+        eventObj["prompt"] ??
+        "",
+      )
+    : "";
 
   if (!prompt) {
     return undefined;

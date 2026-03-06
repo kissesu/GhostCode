@@ -7,20 +7,21 @@
 //!
 //! Web API 响应格式: 裸 DTO（C3 修复后不再包装 ok/data）
 //! 账本路径规则（与 WebState.ledger_path 一致）：
-//! {data_root}/groups/{group_id}/ledger.ndjson
+//! {data_root}/groups/{group_id}/state/ledger/ledger.jsonl
 //!
 //! @author Atlas.oi
 //! @date 2026-03-04
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Method, Request, StatusCode};
 use ghostcode_ledger::append_event;
 use ghostcode_types::event::{Event, EventKind};
-use ghostcode_web::server::create_router;
+use ghostcode_web::server::{build_cors_layer, create_router};
 use ghostcode_web::state::WebState;
 use serde_json::json;
 use tempfile::TempDir;
 use tower::ServiceExt;
+use tower::Layer;
 
 // ============================================
 // 测试辅助函数
@@ -28,14 +29,14 @@ use tower::ServiceExt;
 
 /// 创建 WebState 并写入测试事件，返回 (TempDir, WebState)
 ///
-/// 账本路径: {data_root}/groups/{group_id}/ledger.ndjson
+/// 账本路径: {data_root}/groups/{group_id}/state/ledger/ledger.jsonl
 /// TempDir 必须持有直到测试结束，防止目录被提前清理
 fn setup_web_with_events(group_id: &str, event_count: usize) -> (TempDir, WebState) {
     let dir = TempDir::new().expect("创建临时目录失败");
     let state = WebState::new(dir.path().to_path_buf());
 
-    // WebState.ledger_path 返回: {data_root}/groups/{group_id}/ledger.ndjson
-    let ledger = state.ledger_path(group_id);
+    // WebState.ledger_path 返回: {data_root}/groups/{group_id}/state/ledger/ledger.jsonl
+    let ledger = state.ledger_path(group_id).expect("测试 group_id 应为合法格式");
     let lock = ledger.with_extension("lock");
 
     // 创建 groups/{group_id}/ 目录层级
@@ -189,7 +190,7 @@ async fn e2e_groups_data_isolation() {
     let state = WebState::new(dir.path().to_path_buf());
 
     // 写入 group_a：3 个事件
-    let ledger_a = state.ledger_path(group_a);
+    let ledger_a = state.ledger_path(group_a).expect("测试 group_id 应为合法格式");
     std::fs::create_dir_all(ledger_a.parent().unwrap()).unwrap();
     let lock_a = ledger_a.with_extension("lock");
     for i in 0..3 {
@@ -198,7 +199,7 @@ async fn e2e_groups_data_isolation() {
     }
 
     // 写入 group_b：7 个事件
-    let ledger_b = state.ledger_path(group_b);
+    let ledger_b = state.ledger_path(group_b).expect("测试 group_id 应为合法格式");
     std::fs::create_dir_all(ledger_b.parent().unwrap()).unwrap();
     let lock_b = ledger_b.with_extension("lock");
     for i in 0..7 {
@@ -424,4 +425,170 @@ async fn skill_promote_proxies_daemon_and_returns_result() {
     );
 
     let _ = server_handle.await;
+}
+
+// ============================================
+// 场景 4：全量集成验证 - 完整 Server Stack 测试
+// ============================================
+
+/// 验证完整 server stack 启动后 GET /health 返回 200 和版本信息
+///
+/// 业务逻辑：
+/// 1. 使用 create_router + build_cors_layer 构建完整 app stack
+/// 2. 通过 tower::ServiceExt::oneshot 在进程内发请求
+/// 3. 验证 /health 返回 200 和包含 version 字段的 JSON
+///
+/// @author Atlas.oi
+/// @date 2026-03-05
+#[tokio::test]
+async fn e2e_full_server_health_returns_200_and_version() {
+    let dir = TempDir::new().expect("创建临时目录失败");
+    let state = WebState::new(dir.path().to_path_buf());
+
+    // 构建完整 app stack：路由 + CORS 中间件层
+    let cors = build_cors_layer(&[]);
+    let app = cors.layer(create_router(state));
+
+    let req = Request::builder()
+        .uri("/health")
+        .method(Method::GET)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    // 验证 HTTP 状态码为 200
+    assert_eq!(resp.status(), StatusCode::OK, "完整 server GET /health 应返回 200");
+
+    // 解析响应体，验证包含 version 字段
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("读取响应体失败");
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("响应体应为有效 JSON");
+
+    assert!(
+        body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+        "health 响应应包含 ok: true，实际: {}",
+        body
+    );
+    assert!(
+        body.get("version").is_some(),
+        "health 响应应包含 version 字段，实际: {}",
+        body
+    );
+}
+
+/// 验证无账本文件时 GET /api/groups/:id/dashboard 返回 200 空快照
+///
+/// 业务逻辑：
+/// 1. 创建 WebState 但不写入任何账本文件（group 不存在）
+/// 2. 发送 GET dashboard 请求
+/// 3. 验证返回 200 和默认空快照（total_events = 0）
+///
+/// @author Atlas.oi
+/// @date 2026-03-05
+#[tokio::test]
+async fn e2e_dashboard_nonexistent_group_returns_empty_snapshot() {
+    let dir = TempDir::new().expect("创建临时目录失败");
+    let state = WebState::new(dir.path().to_path_buf());
+
+    // 构建完整 app stack（不写入任何事件，验证空快照）
+    let cors = build_cors_layer(&[]);
+    let app = cors.layer(create_router(state));
+
+    let req = Request::builder()
+        .uri("/api/groups/nonexistent-group/dashboard")
+        .method(Method::GET)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    // 账本不存在时应返回 200 + 空快照（而非 404 或 500）
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "无账本文件时 dashboard 应返回 200 空快照"
+    );
+
+    // 解析响应体，验证空快照结构
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("读取响应体失败");
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("响应体应为有效 JSON");
+
+    // 验证 DashboardSnapshot 基础结构存在
+    assert!(
+        body.get("group_id").is_some(),
+        "空快照应包含 group_id 字段，实际: {}",
+        body
+    );
+
+    let total_events = body["total_events"].as_u64().unwrap_or(0);
+    assert_eq!(
+        total_events,
+        0,
+        "无账本文件时 total_events 应为 0，实际: {}",
+        total_events
+    );
+}
+
+/// 验证 CORS 预检请求在完整 server stack 上正确响应
+///
+/// 业务逻辑：
+/// 1. 构建完整 app stack（含 CORS 中间件）
+/// 2. 发送 OPTIONS /health 请求，携带 Origin + Access-Control-Request-Method 头
+/// 3. 验证响应包含正确的 CORS 响应头
+///
+/// @author Atlas.oi
+/// @date 2026-03-05
+#[tokio::test]
+async fn e2e_cors_preflight_returns_correct_headers() {
+    let dir = TempDir::new().expect("创建临时目录失败");
+    let state = WebState::new(dir.path().to_path_buf());
+
+    // 构建完整 app stack，额外允许自定义 origin
+    let cors = build_cors_layer(&["http://localhost:3000".to_string()]);
+    let app = cors.layer(create_router(state));
+
+    // 发送 OPTIONS 预检请求
+    let req = Request::builder()
+        .uri("/health")
+        .method(Method::OPTIONS)
+        .header("Origin", "http://localhost:5173")
+        .header("Access-Control-Request-Method", "GET")
+        .header("Access-Control-Request-Headers", "content-type")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    // CORS 预检应返回成功状态码（200 或 204）
+    let status = resp.status();
+    assert!(
+        status == StatusCode::OK || status == StatusCode::NO_CONTENT,
+        "CORS 预检请求应返回 200 或 204，实际: {}",
+        status
+    );
+
+    // 验证 Access-Control-Allow-Origin 头存在
+    let allow_origin = resp
+        .headers()
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        !allow_origin.is_empty(),
+        "CORS 预检响应应包含 Access-Control-Allow-Origin 头"
+    );
+
+    // 验证 Access-Control-Allow-Methods 头存在
+    let allow_methods = resp
+        .headers()
+        .get("access-control-allow-methods")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        !allow_methods.is_empty(),
+        "CORS 预检响应应包含 Access-Control-Allow-Methods 头"
+    );
 }

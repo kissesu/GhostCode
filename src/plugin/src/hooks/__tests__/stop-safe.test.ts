@@ -7,8 +7,11 @@
  *              - 非最后一个 session stop 时不调用 stopDaemon
  *              - 最后一个 session stop 时才调用 stopDaemon
  *              - lease 操作失败时安全降级为执行 shutdown
+ *              - onSessionEnd 在 stopDaemon 之前被调用（调用顺序）
+ *              - onSessionEnd 失败不影响后续 stopDaemon
+ *              - PBT：多会话 lease acquire/release 序列下 refcount >= 0 且仅 isLast=true 时触发关停
  * @author Atlas.oi
- * @date 2026-03-04
+ * @date 2026-03-05
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -232,5 +235,174 @@ describe("stopHandler - releaseLease", () => {
     // 保守策略：无法确认是否为最后一个会话时，不关闭 Daemon，防止误杀其他会话的共享实例
     // 孤儿 Daemon 由心跳超时机制或下次启动时的 cleanup 处理
     expect(mockStopDaemon).toHaveBeenCalledTimes(0);
+  });
+});
+
+// ============================================
+// 测试套件：stopHandler - 调用顺序验证
+// 验证 onSessionEnd 必须在 stopDaemon 之前调用
+// 确保 Skill Learning 在 Daemon 仍运行时完成
+// ============================================
+
+describe("stopHandler - 调用顺序：onSessionEnd 先于 stopDaemon", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("onSessionEnd 应在 stopDaemon 之前被调用", async () => {
+    // 用于记录调用顺序的序列数组
+    const callOrder: string[] = [];
+
+    const mockStopDaemon = vi.fn().mockImplementation(async () => {
+      callOrder.push("stopDaemon");
+    });
+    const mockOnSessionEnd = vi.fn().mockImplementation(async () => {
+      callOrder.push("onSessionEnd");
+    });
+
+    vi.doMock("../../daemon.js", () => ({
+      ensureDaemon: vi.fn().mockResolvedValue({ host: "127.0.0.1", port: 9000 }),
+      stopDaemon: mockStopDaemon,
+      startHeartbeat: vi.fn().mockReturnValue(() => {}),
+    }));
+
+    vi.doMock("../../session-lease.js", () => ({
+      SessionLeaseManager: vi.fn().mockImplementation(() => ({
+        acquireLease: vi.fn().mockReturnValue({ leaseId: "order-test", refcount: 1 }),
+        // isLast=true 以触发 stopDaemon 调用
+        releaseLease: vi.fn().mockReturnValue({ refcount: 0, isLast: true }),
+      })),
+    }));
+
+    vi.doMock("../../learner/index.js", () => ({
+      onSessionEnd: mockOnSessionEnd,
+    }));
+
+    const { preToolUseHandler, stopHandler } = await import("../handlers.js");
+
+    await preToolUseHandler(undefined);
+    await stopHandler(undefined);
+
+    // 验证 onSessionEnd 在 stopDaemon 之前被调用
+    expect(callOrder).toEqual(["onSessionEnd", "stopDaemon"]);
+    expect(mockOnSessionEnd).toHaveBeenCalledTimes(1);
+    expect(mockStopDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it("onSessionEnd 失败不应阻断后续 stopDaemon 的调用", async () => {
+    const mockStopDaemon = vi.fn().mockResolvedValue(undefined);
+    const mockOnSessionEnd = vi.fn().mockRejectedValue(new Error("Skill Learning 分析异常"));
+
+    vi.doMock("../../daemon.js", () => ({
+      ensureDaemon: vi.fn().mockResolvedValue({ host: "127.0.0.1", port: 9000 }),
+      stopDaemon: mockStopDaemon,
+      startHeartbeat: vi.fn().mockReturnValue(() => {}),
+    }));
+
+    vi.doMock("../../session-lease.js", () => ({
+      SessionLeaseManager: vi.fn().mockImplementation(() => ({
+        acquireLease: vi.fn().mockReturnValue({ leaseId: "error-order-test", refcount: 1 }),
+        // isLast=true 以触发 stopDaemon
+        releaseLease: vi.fn().mockReturnValue({ refcount: 0, isLast: true }),
+      })),
+    }));
+
+    vi.doMock("../../learner/index.js", () => ({
+      onSessionEnd: mockOnSessionEnd,
+    }));
+
+    const { preToolUseHandler, stopHandler } = await import("../handlers.js");
+
+    await preToolUseHandler(undefined);
+    // onSessionEnd 抛异常，stopHandler 不应抛出
+    await expect(stopHandler(undefined)).resolves.not.toThrow();
+
+    // 即使 onSessionEnd 失败，stopDaemon 仍需被调用
+    expect(mockOnSessionEnd).toHaveBeenCalledTimes(1);
+    expect(mockStopDaemon).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================
+// 测试套件：PBT（基于属性的测试）
+// 验证多会话 acquire/release 序列下的不变量：
+// 1. refcount 永远 >= 0
+// 2. 仅在 isLast=true 时触发 stopDaemon
+// ============================================
+
+describe("PBT - 多会话 lease 序列不变量", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("多次 acquire/release 序列：refcount 不应为负数且仅 isLast=true 时关停", async () => {
+    // 模拟 N 个会话：每个会话 acquire 一个 lease，然后按顺序 release
+    // 验证：只有最后一个 release 时 isLast=true，并且 stopDaemon 恰好被调用一次
+    const N = 5;
+    let refcount = 0;
+    const refcountHistory: number[] = [];
+
+    const mockStopDaemon = vi.fn().mockResolvedValue(undefined);
+
+    // 模拟多会话使用同一个 leaseManager 实例（通过闭包共享状态）
+    vi.doMock("../../daemon.js", () => ({
+      ensureDaemon: vi.fn().mockResolvedValue({ host: "127.0.0.1", port: 9000 }),
+      stopDaemon: mockStopDaemon,
+      startHeartbeat: vi.fn().mockReturnValue(() => {}),
+    }));
+
+    vi.doMock("../../session-lease.js", () => ({
+      SessionLeaseManager: vi.fn().mockImplementation(() => ({
+        acquireLease: vi.fn().mockImplementation(() => {
+          refcount++;
+          refcountHistory.push(refcount);
+          return { leaseId: `lease-${refcount}`, refcount };
+        }),
+        releaseLease: vi.fn().mockImplementation(() => {
+          refcount--;
+          refcountHistory.push(refcount);
+          // refcount 不应为负数（不变量断言）
+          expect(refcount).toBeGreaterThanOrEqual(0);
+          return { refcount, isLast: refcount === 0 };
+        }),
+        getRefcount: vi.fn().mockReturnValue(refcount),
+      })),
+    }));
+
+    vi.doMock("../../learner/index.js", () => ({
+      onSessionEnd: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    // 模拟 N 个会话并发：每个从全新实例 import，但共享同一个 leaseManager 状态（通过闭包）
+    // 这里简化为串行：acquire N 次，release N 次
+    const { preToolUseHandler, stopHandler } = await import("../handlers.js");
+
+    // 第一个会话（本测试进程代表）：acquire 一次
+    await preToolUseHandler(undefined);
+
+    // 模拟另外 N-1 个会话直接操作 refcount（不通过 handlers，因为每个会话有独立模块实例）
+    // 这里直接修改共享的 refcount 变量模拟 N-1 次 acquire
+    for (let i = 1; i < N; i++) {
+      refcount++;
+      refcountHistory.push(refcount);
+    }
+
+    // 然后模拟 N-1 个其他会话 release（不触发 stopDaemon，因为不通过本 handler）
+    for (let i = 0; i < N - 1; i++) {
+      refcount--;
+      refcountHistory.push(refcount);
+      expect(refcount).toBeGreaterThanOrEqual(0);
+    }
+
+    // 最后一个 release 通过 stopHandler（此时 refcount 变为 0，isLast=true）
+    await stopHandler(undefined);
+
+    // 验证：refcount 历史中没有出现负数
+    for (const rc of refcountHistory) {
+      expect(rc).toBeGreaterThanOrEqual(0);
+    }
+
+    // 验证：stopDaemon 恰好被调用一次（仅最后一个会话触发）
+    expect(mockStopDaemon).toHaveBeenCalledTimes(1);
   });
 });

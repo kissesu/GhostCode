@@ -3,17 +3,16 @@
   "version": "0.1.0",
   "description": "GhostCode - 多 Agent 协作开发平台，Claude Code Plugin",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
-  },
-"files": [
+  "skills": "./skills/",
+  "files": [
     "dist",
     ".claude",
+    ".claude-plugin",
+    "hooks",
+    "skills",
+    "commands",
+    ".mcp.json",
+    "scripts",
     "bin"
   ],
   "scripts": {
@@ -21,8 +20,7 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "postinstall": "node dist/postinstall.js"
+    "test:watch": "vitest"
   },
   "bin": {
     "ghostcode": "dist/cli.js"

@@ -21,12 +21,14 @@ pub struct WebState {
 impl WebState {
     /// 创建新的 WebState（使用默认 daemon socket 路径）
     ///
-    /// daemon_socket_path 默认为 {data_root}/daemon.sock
+    /// daemon_socket_path 默认为 {data_root}/daemon/ghostcoded.sock
+    /// 与 ghostcode-daemon 的 DaemonPaths 保持一致
     ///
     /// @param data_root - GhostCode 数据根目录
     pub fn new(data_root: PathBuf) -> Self {
-        // 默认 socket 路径：{data_root}/daemon.sock
-        let daemon_socket_path = data_root.join("daemon.sock");
+        // 默认 socket 路径：{data_root}/daemon/ghostcoded.sock
+        // 注意：与 ghostcode-daemon/src/paths.rs 中 DaemonPaths::new() 保持一致
+        let daemon_socket_path = data_root.join("daemon").join("ghostcoded.sock");
         Self {
             data_root,
             daemon_socket_path,
@@ -46,17 +48,43 @@ impl WebState {
         }
     }
 
+    /// 校验 group_id 是否为合法格式
+    ///
+    /// 安全约束：仅允许字母、数字、连字符、下划线
+    /// 拒绝包含路径分隔符（/ \）或目录遍历（..）的输入
+    /// 防止路径穿越攻击（如 ../../etc/passwd）
+    ///
+    /// @param group_id - 待校验的 Group ID
+    /// @returns 合法返回 true，非法返回 false
+    pub fn is_valid_group_id(group_id: &str) -> bool {
+        !group_id.is_empty()
+            && group_id
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    }
+
     /// 构造指定 Group 的账本文件路径
     ///
-    /// 格式: {data_root}/groups/{group_id}/ledger.ndjson
+    /// 格式: {data_root}/groups/{group_id}/state/ledger/ledger.jsonl
+    /// 与 ghostcode-daemon 的写入路径保持一致
     ///
-    /// @param group_id - Group ID
-    /// @returns 账本文件路径
-    pub fn ledger_path(&self, group_id: &str) -> PathBuf {
-        self.data_root
-            .join("groups")
-            .join(group_id)
-            .join("ledger.ndjson")
+    /// 安全：group_id 必须通过 is_valid_group_id 校验，
+    /// 非法输入返回 None，防止路径穿越攻击
+    ///
+    /// @param group_id - Group ID（仅允许字母、数字、连字符、下划线）
+    /// @returns 合法时返回 Some(路径)，非法输入返回 None
+    pub fn ledger_path(&self, group_id: &str) -> Option<PathBuf> {
+        if !Self::is_valid_group_id(group_id) {
+            return None;
+        }
+        Some(
+            self.data_root
+                .join("groups")
+                .join(group_id)
+                .join("state")
+                .join("ledger")
+                .join("ledger.jsonl"),
+        )
     }
 
     /// 构造默认的 WebState（使用 ~/.ghostcode 作为数据根目录）

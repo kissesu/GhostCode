@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # scripts/pack-plugin.sh — GhostCode Plugin 打包脚本
 #
-# 将三平台 Rust 二进制 + TypeScript 编译产物 + 配置文件
+# 将三平台 Rust 二进制 + TypeScript 编译产物 + Plugin 配置文件
 # 组装为符合 Claude Code Plugin 规范的 npm 包目录。
 #
 # 架构拓扑说明（混合架构）：
-#   - Node.js Extension（dist/index.js）：处理 Claude Code Hooks，
-#     负责 Magic Keywords、HUD 状态栏、用户交互层等 Plugin 功能
+#   - Node.js Extension（dist/index.js）：被 scripts/*.mjs 动态 import，
+#     处理 Claude Code Hooks（Magic Keywords、HUD 状态栏、用户交互层等）
 #   - Rust MCP Server（bin/ghostcode-mcp）：通过 stdio JSON-RPC 2.0
 #     与 Claude Code 通信，提供多 Agent 协作工具能力，连接 Daemon
 #   - Rust Daemon（bin/ghostcoded-*）：后台守护进程，管理 Agent 生命周期、
@@ -14,7 +14,9 @@
 #
 # 启动拓扑：
 #   Claude Code
-#     ├── Extension (Node.js)  →  dist/index.js         [Hooks 处理]
+#     ├── Extension (Node.js)  →  scripts/hook-*.mjs    [Hooks 处理]
+#     │                               ↓ dynamic import
+#     │                          dist/index.js           [核心模块]
 #     └── MCP Server (Rust)    →  bin/ghostcode-mcp     [工具能力]
 #                                      ↓ Unix Socket
 #                              Daemon (bin/ghostcoded-*)  [核心引擎]
@@ -24,23 +26,44 @@
 #     --binaries-dir <path>   二进制文件所在目录（含 ghostcode-mcp 和 ghostcoded-* 二进制）
 #     --ts-dist <path>        TypeScript 编译产物目录（tsup 输出）
 #     --version <semver>      版本号（如 0.1.0，不含 v 前缀）
+#     --plugin-src <path>     Plugin 源目录（默认 src/plugin）
 #     --output <path>         输出目录（默认 ghostcode-plugin/）
 #
 # 预期输出结构:
 #   <output>/
 #     package.json
+#     .claude-plugin/
+#       plugin.json
+#     hooks/
+#       hooks.json
+#     skills/
+#       team-research/SKILL.md
+#       team-plan/SKILL.md
+#       team-exec/SKILL.md
+#       team-review/SKILL.md
+#       spec-research/SKILL.md
+#       spec-plan/SKILL.md
+#       spec-impl/SKILL.md
+#     .mcp.json
+#     scripts/
+#       run.mjs
+#       hook-pre-tool-use.mjs
+#       hook-stop.mjs
+#       hook-user-prompt-submit.mjs
 #     dist/
-#       index.js
+#       index.js       (核心模块，被 scripts/*.mjs 动态 import)
+#       cli.js         (CLI 工具)
 #     bin/
-#       ghostcode-mcp              # MCP Server（Rust，stdio JSON-RPC）
-#       ghostcoded-darwin-arm64    # Daemon（macOS Apple Silicon）
-#       ghostcoded-darwin-x64      # Daemon（macOS Intel）
-#       ghostcoded-linux-x64       # Daemon（Linux x86_64）
-#     .claude/
-#       settings.json
+#       ghostcode-mcp              (平台检测启动器)
+#       ghostcode-mcp-darwin-arm64
+#       ghostcode-mcp-darwin-x64
+#       ghostcode-mcp-linux-x64
+#       ghostcoded-darwin-arm64
+#       ghostcoded-darwin-x64
+#       ghostcoded-linux-x64
 #
 # @author Atlas.oi
-# @date 2026-03-04
+# @date 2026-03-05
 
 set -euo pipefail
 
@@ -51,6 +74,7 @@ BINARIES_DIR=""
 TS_DIST=""
 VERSION=""
 OUTPUT_DIR="ghostcode-plugin"
+PLUGIN_SRC="src/plugin"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,6 +82,7 @@ while [[ $# -gt 0 ]]; do
     --ts-dist)      TS_DIST="$2";      shift 2 ;;
     --version)      VERSION="$2";      shift 2 ;;
     --output)       OUTPUT_DIR="$2";   shift 2 ;;
+    --plugin-src)   PLUGIN_SRC="$2";   shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 1 ;;
   esac
 done
@@ -66,7 +91,7 @@ done
 # 参数验证
 # ============================================
 if [[ -z "$BINARIES_DIR" || -z "$TS_DIST" || -z "$VERSION" ]]; then
-  echo "用法: $0 --binaries-dir <path> --ts-dist <path> --version <semver> [--output <path>]" >&2
+  echo "用法: $0 --binaries-dir <path> --ts-dist <path> --version <semver> [--plugin-src <path>] [--output <path>]" >&2
   exit 1
 fi
 
@@ -80,9 +105,15 @@ if [[ ! -d "$TS_DIST" ]]; then
   exit 1
 fi
 
+if [[ ! -d "$PLUGIN_SRC" ]]; then
+  echo "错误: Plugin 源目录不存在: $PLUGIN_SRC" >&2
+  exit 1
+fi
+
 echo "开始打包 GhostCode Plugin v${VERSION}"
 echo "  二进制目录: $BINARIES_DIR"
 echo "  TS 产物目录: $TS_DIST"
+echo "  Plugin 源目录: $PLUGIN_SRC"
 echo "  输出目录: $OUTPUT_DIR"
 
 # ============================================
@@ -93,15 +124,20 @@ echo "第一步：创建目录结构..."
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR/dist"
 mkdir -p "$OUTPUT_DIR/bin"
-mkdir -p "$OUTPUT_DIR/.claude"
+mkdir -p "$OUTPUT_DIR/.claude-plugin"
+mkdir -p "$OUTPUT_DIR/hooks"
+mkdir -p "$OUTPUT_DIR/skills"
+mkdir -p "$OUTPUT_DIR/scripts"
 
 # ============================================
 # 第二步：复制 TypeScript 编译产物
+# 只需要 index.js（核心模块）和 cli.js（CLI 工具）
+# postinstall.js 在新架构中不再需要
 # ============================================
 echo "第二步：复制 TypeScript 产物..."
 
-# 验证三个必须的 JS 入口文件存在
-for entry in index.js cli.js postinstall.js; do
+# 验证必须的 JS 入口文件存在
+for entry in index.js cli.js; do
   if [[ ! -f "$TS_DIST/$entry" ]]; then
     echo "错误: 缺少 TypeScript 产物: $TS_DIST/$entry" >&2
     echo "      请先运行 pnpm --dir src/plugin run build" >&2
@@ -109,11 +145,10 @@ for entry in index.js cli.js postinstall.js; do
   fi
 done
 
-# 复制三个入口文件
+# 复制两个入口文件
 cp "$TS_DIST/index.js" "$OUTPUT_DIR/dist/index.js"
 cp "$TS_DIST/cli.js" "$OUTPUT_DIR/dist/cli.js"
-cp "$TS_DIST/postinstall.js" "$OUTPUT_DIR/dist/postinstall.js"
-echo "  复制: dist/index.js, dist/cli.js, dist/postinstall.js"
+echo "  复制: dist/index.js, dist/cli.js"
 
 # 复制类型声明（如存在）
 for dts in "$TS_DIST"/*.d.ts; do
@@ -123,18 +158,75 @@ for dts in "$TS_DIST"/*.d.ts; do
 done
 
 # ============================================
-# 第三步：复制二进制文件
+# 第三步：复制 Plugin 配置文件
+# 包括 plugin.json、hooks.json、.mcp.json、skills、scripts
+# 这些文件定义了 Plugin 的能力和 Hook 处理脚本
+# ============================================
+echo "第三步：复制 Plugin 配置文件..."
+
+# 复制 .claude-plugin/plugin.json（Plugin 元数据配置）
+if [[ ! -f "$PLUGIN_SRC/.claude-plugin/plugin.json" ]]; then
+  echo "错误: 缺少 Plugin 配置文件: $PLUGIN_SRC/.claude-plugin/plugin.json" >&2
+  exit 1
+fi
+cp "$PLUGIN_SRC/.claude-plugin/plugin.json" "$OUTPUT_DIR/.claude-plugin/plugin.json"
+echo "  复制: .claude-plugin/plugin.json"
+
+# 复制 hooks/hooks.json（Hook 事件注册配置）
+if [[ ! -f "$PLUGIN_SRC/hooks/hooks.json" ]]; then
+  echo "错误: 缺少 Hooks 配置文件: $PLUGIN_SRC/hooks/hooks.json" >&2
+  exit 1
+fi
+cp "$PLUGIN_SRC/hooks/hooks.json" "$OUTPUT_DIR/hooks/hooks.json"
+echo "  复制: hooks/hooks.json"
+
+# 复制 .mcp.json（MCP Server 注册配置）
+if [[ ! -f "$PLUGIN_SRC/.mcp.json" ]]; then
+  echo "错误: 缺少 MCP 配置文件: $PLUGIN_SRC/.mcp.json" >&2
+  exit 1
+fi
+cp "$PLUGIN_SRC/.mcp.json" "$OUTPUT_DIR/.mcp.json"
+echo "  复制: .mcp.json"
+
+# 复制 Skills 目录（每个 skill 的 SKILL.md 定义文件）
+if [[ -d "$PLUGIN_SRC/skills" ]]; then
+  for skill_dir in "$PLUGIN_SRC/skills"/*/; do
+    if [[ -d "$skill_dir" ]]; then
+      skill_name=$(basename "$skill_dir")
+      mkdir -p "$OUTPUT_DIR/skills/$skill_name"
+      if [[ -f "$skill_dir/SKILL.md" ]]; then
+        cp "$skill_dir/SKILL.md" "$OUTPUT_DIR/skills/$skill_name/SKILL.md"
+        echo "  复制: skills/$skill_name/SKILL.md"
+      else
+        echo "警告: skills/$skill_name 目录下缺少 SKILL.md" >&2
+      fi
+    fi
+  done
+else
+  echo "警告: Plugin 源目录下不存在 skills/ 目录，跳过 Skills 复制" >&2
+fi
+
+# 复制 Scripts（Hook 处理脚本，被 hooks.json 引用）
+for script in run.mjs hook-pre-tool-use.mjs hook-stop.mjs hook-user-prompt-submit.mjs; do
+  if [[ ! -f "$PLUGIN_SRC/scripts/$script" ]]; then
+    echo "错误: 缺少 Hook 脚本: $PLUGIN_SRC/scripts/$script" >&2
+    exit 1
+  fi
+  cp "$PLUGIN_SRC/scripts/$script" "$OUTPUT_DIR/scripts/$script"
+  echo "  复制: scripts/$script"
+done
+
+# ============================================
+# 第四步：复制二进制文件
 # 包含两类二进制：
 #   1. ghostcode-mcp — MCP Server，通过 stdio 与 Claude Code 通信
-#      作为 MCP server 注册到 .claude/settings.json
+#      注册在 .mcp.json 中，替代旧版 .claude/settings.json
 #   2. ghostcoded-* — 三平台 Daemon，被 ghostcode-mcp 通过 Unix Socket 调用
 # 每个二进制复制后设置可执行权限
 # ============================================
-echo "第三步：复制二进制文件..."
+echo "第四步：复制二进制文件..."
 
 # MCP Server 三平台二进制（通过 stdio 与 Claude Code 通信）
-# 与 Daemon 相同，MCP Server 也是 Rust 编译的平台特定二进制
-# 通过 bin/ghostcode-mcp 启动器脚本自动选择正确平台版本
 MCP_BINARIES=(
   "ghostcode-mcp-darwin-arm64"
   "ghostcode-mcp-darwin-x64"
@@ -156,7 +248,7 @@ for bin in "${MCP_BINARIES[@]}"; do
 done
 
 # 生成 MCP Server 平台检测启动器脚本
-# Claude Code 通过 .claude/settings.json 调用此脚本，
+# .mcp.json 通过此脚本调用 MCP Server，
 # 脚本自动检测运行平台并 exec 对应的二进制
 cat > "$OUTPUT_DIR/bin/ghostcode-mcp" << 'LAUNCHER_EOF'
 #!/bin/sh
@@ -196,10 +288,11 @@ for bin in "${DAEMON_BINARIES[@]}"; do
 done
 
 # ============================================
-# 第四步：生成 package.json
-# 使用传入的版本号填充
+# 第五步：生成 package.json
+# 新架构移除了 main/exports 字段（dist/index.js 由 scripts/*.mjs 动态 import）
+# 移除了 postinstall script（不再需要安装后注册逻辑）
 # ============================================
-echo "第四步：生成 package.json..."
+echo "第五步：生成 package.json..."
 
 cat > "$OUTPUT_DIR/package.json" << EOF
 {
@@ -207,28 +300,22 @@ cat > "$OUTPUT_DIR/package.json" << EOF
   "version": "${VERSION}",
   "description": "GhostCode - 多 Agent 协作开发平台 Claude Code Plugin",
   "type": "module",
-  "main": "dist/index.js",
   "bin": {
     "ghostcode": "dist/cli.js"
   },
-  "scripts": {
-    "postinstall": "node dist/postinstall.js"
-  },
   "files": [
     "dist",
-    "bin",
-    ".claude"
+    ".claude-plugin",
+    "hooks",
+    "skills",
+    ".mcp.json",
+    "scripts",
+    "bin"
   ],
   "engines": {
     "node": ">=20"
   },
-  "keywords": [
-    "claude",
-    "claude-code",
-    "plugin",
-    "multi-agent",
-    "ghostcode"
-  ],
+  "keywords": ["claude", "claude-code", "plugin", "multi-agent", "ghostcode"],
   "author": "Atlas.oi",
   "license": "MIT",
   "repository": {
@@ -240,42 +327,22 @@ EOF
 echo "  生成: package.json"
 
 # ============================================
-# 第五步：生成 .claude/settings.json
-# Claude Code Plugin 配置文件
-#
-# 混合架构配置说明：
-#   - mcpServers.ghostcode：注册 Rust MCP Server 二进制
-#     command 指向 bin/ghostcode-mcp（相对于插件安装目录）
-#     该二进制通过 stdio 实现 JSON-RPC 2.0 与 Claude Code 通信
-#     内部通过 Unix Socket 连接后台 Daemon
-#
-#   注意：Node.js Extension（dist/index.js）作为 Claude Code Plugin
-#   的 extension 入口自动加载，无需在 settings.json 中单独注册，
-#   其职责为 Hooks 处理（Magic Keywords、HUD 状态栏等 UI 层功能）
-# ============================================
-echo "第五步：生成 .claude/settings.json..."
-
-cat > "$OUTPUT_DIR/.claude/settings.json" << EOF
-{
-  "mcpServers": {
-    "ghostcode": {
-      "command": "./bin/ghostcode-mcp",
-      "args": ["--base-dir", "\${HOME}/.ghostcode"],
-      "description": "GhostCode 多 Agent 协作开发平台 MCP Server"
-    }
-  }
-}
-EOF
-echo "  生成: .claude/settings.json"
-
-# ============================================
 # 第六步：验证最终包结构
+# 确保所有必须文件都已正确复制/生成
 # ============================================
 echo "第六步：验证包结构..."
 
 REQUIRED_FILES=(
   "package.json"
+  ".claude-plugin/plugin.json"
+  "hooks/hooks.json"
+  ".mcp.json"
+  "scripts/run.mjs"
+  "scripts/hook-pre-tool-use.mjs"
+  "scripts/hook-stop.mjs"
+  "scripts/hook-user-prompt-submit.mjs"
   "dist/index.js"
+  "dist/cli.js"
   "bin/ghostcode-mcp"
   "bin/ghostcode-mcp-darwin-arm64"
   "bin/ghostcode-mcp-darwin-x64"
@@ -283,7 +350,6 @@ REQUIRED_FILES=(
   "bin/ghostcoded-darwin-arm64"
   "bin/ghostcoded-darwin-x64"
   "bin/ghostcoded-linux-x64"
-  ".claude/settings.json"
 )
 
 ALL_OK=true
@@ -292,6 +358,16 @@ for f in "${REQUIRED_FILES[@]}"; do
     echo "  OK: $f"
   else
     echo "  缺失: $f" >&2
+    ALL_OK=false
+  fi
+done
+
+# 验证 Skills 目录（七个标准 skill）
+for skill in team-research team-plan team-exec team-review spec-research spec-plan spec-impl; do
+  if [[ -f "$OUTPUT_DIR/skills/$skill/SKILL.md" ]]; then
+    echo "  OK: skills/$skill/SKILL.md"
+  else
+    echo "  缺失: skills/$skill/SKILL.md" >&2
     ALL_OK=false
   fi
 done

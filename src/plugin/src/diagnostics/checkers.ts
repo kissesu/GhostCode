@@ -138,13 +138,15 @@ export async function checkDaemonReachable(): Promise<CheckResult> {
   try {
     const content = await fs.readFile(addrPath, "utf-8");
     const parsed = JSON.parse(content) as Record<string, unknown>;
-    const rawPath = parsed["socket_path"];
+    // 优先读取新版 path 字段，兼容旧版 socket_path 字段（过渡期）
+    // 字段契约：addr.json 必须包含 path 或 socket_path 之一
+    const rawPath = parsed["path"] ?? parsed["socket_path"];
     if (typeof rawPath !== "string" || rawPath.length === 0) {
       return {
         name: "daemon-reachable",
         status: "FAIL",
-        message: "addr.json 中 socket_path 字段无效",
-        suggestion: "请运行 `ghostcode doctor` 重启 Daemon",
+        message: "addr.json 中 path 字段无效或缺失（字段契约：需要 path 或 socket_path）",
+        suggestion: "请运行 `ghostcode init` 重启 Daemon 以写入正确的 addr.json",
       };
     }
     socketPath = rawPath;

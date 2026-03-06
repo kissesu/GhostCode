@@ -147,6 +147,26 @@ async function apiFetch<T>(
 // 各端点请求函数
 // ============================================
 
+/** 活跃 Group 响应 */
+export interface ActiveGroupResponse {
+  /** 当前活跃的 Group ID（null 表示无活跃 Group） */
+  group_id: string | null;
+}
+
+/**
+ * 查询当前活跃的 Group
+ *
+ * 后端自动扫描 groups 目录，返回最近有账本活动的 group
+ *
+ * @param baseUrl - 后端基础 URL（可选）
+ * @returns 活跃 Group 响应
+ */
+export async function fetchActiveGroup(
+  baseUrl?: string,
+): Promise<ActiveGroupResponse> {
+  return apiFetch<ActiveGroupResponse>('/api/active-group', {}, baseUrl);
+}
+
 /**
  * 获取 Dashboard 快照
  *

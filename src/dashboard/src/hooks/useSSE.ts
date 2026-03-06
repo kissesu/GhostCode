@@ -99,8 +99,13 @@ export function useSSE(groupId: string | null, baseUrl = ''): UseSSEResult {
 
     es.onmessage = (event: MessageEvent) => {
       try {
-        const item = JSON.parse(event.data as string) as LedgerTimelineItem;
-        setEvents((prev) => [...prev, item]);
+        const parsed = JSON.parse(event.data as string) as Record<string, unknown>;
+        // 心跳事件（后端连接建立时立即发送）只用于冲刷代理缓冲区，
+        // 不加入 timeline 事件列表
+        if (parsed.type === 'connected') {
+          return;
+        }
+        setEvents((prev) => [...prev, parsed as unknown as LedgerTimelineItem]);
       } catch {
         // JSON 解析失败时记录警告但不中断流
         console.warn('SSE 消息解析失败:', event.data);

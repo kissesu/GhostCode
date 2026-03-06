@@ -51,7 +51,7 @@ export interface UseDashboardResult {
  * @param baseUrl - 后端基础 URL（可选）
  * @returns Dashboard 聚合状态和操作函数
  */
-export function useDashboard(groupId: string, baseUrl = ''): UseDashboardResult {
+export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboardResult {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [skills, setSkills] = useState<LearnedSkill[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,6 +67,11 @@ export function useDashboard(groupId: string, baseUrl = ''): UseDashboardResult 
    * 拉取初始快照和 Skill 列表
    */
   const loadInitialData = useCallback(async () => {
+    if (!groupId) {
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     knownEventIdsRef.current = new Set();
@@ -105,7 +110,7 @@ export function useDashboard(groupId: string, baseUrl = ''): UseDashboardResult 
    * 将新事件追加到 timeline 尾部
    */
   useEffect(() => {
-    if (sseEvents.length === 0 || !snapshot) return;
+    if (sseEvents.length === 0) return;
 
     // 找出尚未在 timeline 中的新事件
     const newItems: LedgerTimelineItem[] = [];
@@ -119,7 +124,8 @@ export function useDashboard(groupId: string, baseUrl = ''): UseDashboardResult 
     if (newItems.length === 0) return;
 
     // 追加新事件并更新计数
-    // W7 修复：限制 timeline 最多保留 500 条，防止长时间运行导致内存溢出
+    // 使用函数式更新（prev =>），不依赖外部 snapshot 变量
+    // 限制 timeline 最多保留 500 条，防止长时间运行导致内存溢出
     const MAX_TIMELINE_ITEMS = 500;
     setSnapshot((prev) => {
       if (!prev) return prev;
@@ -130,7 +136,10 @@ export function useDashboard(groupId: string, baseUrl = ''): UseDashboardResult 
         total_events: prev.total_events + newItems.length,
       };
     });
-  }, [sseEvents, snapshot]);
+    // 依赖项说明：移除 snapshot 依赖，避免 setSnapshot 触发的重渲染导致 effect 重复运行
+    // setSnapshot 内部使用函数式更新（prev => ...），不需要外部 snapshot 值
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sseEvents]);
 
   /**
    * 更新 Agent 状态（通过 SSE 事件中的 agent 相关 kind 触发）
@@ -139,7 +148,7 @@ export function useDashboard(groupId: string, baseUrl = ''): UseDashboardResult 
    * 当收到 actor_joined/actor_left/heartbeat 类事件时，刷新 Agent 列表
    */
   useEffect(() => {
-    if (sseEvents.length === 0) return;
+    if (sseEvents.length === 0 || !groupId) return;
 
     const lastEvent = sseEvents[sseEvents.length - 1];
     const agentRelatedKinds = ['actor_joined', 'actor_left', 'heartbeat', 'ActorJoined', 'ActorLeft', 'Heartbeat'];
@@ -169,6 +178,7 @@ export function useDashboard(groupId: string, baseUrl = ''): UseDashboardResult 
    */
   const handlePromoteSkill = useCallback(
     async (skillId: string) => {
+      if (!groupId) return;
       try {
         await promoteSkill(groupId, skillId, baseUrl || undefined);
         // 提升成功后刷新 Skill 列表

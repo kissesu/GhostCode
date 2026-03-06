@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ghostcode": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/ghostcode-mcp",
+      "args": [],
+      "env": {
+        "GHOSTCODE_LOG": "info"
+      },
+      "description": "GhostCode 多 Agent 协作开发平台 MCP Server"
+    }
+  }
+}

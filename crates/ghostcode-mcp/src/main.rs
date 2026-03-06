@@ -119,6 +119,55 @@ async fn wait_for_daemon_addr(base_dir: &Path) -> Result<PathBuf> {
     }
 }
 
+/// 从 groups 目录自动检测当前活跃的 group_id
+///
+/// 扫描 base_dir/groups/ 下以 "g-" 开头的目录，
+/// 按 ledger 文件修改时间排序，返回最近活跃的 group
+/// 与 handle_active_group（Web 端点）逻辑保持一致
+///
+/// @param base_dir - GhostCode 基准目录（如 ~/.ghostcode/）
+/// @return 检测到的 group_id，或 None
+fn detect_group_id(base_dir: &Path) -> Option<String> {
+    let groups_dir = base_dir.join("groups");
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+
+    for entry in std::fs::read_dir(&groups_dir).ok()?.flatten() {
+        // 确保文件名是合法 UTF-8，非 UTF-8 名称直接跳过
+        let name_str = match entry.file_name().to_str() {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if !name_str.starts_with("g-") {
+            continue;
+        }
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        // 按 ledger 文件修改时间排序，选择最近活跃的 group
+        let ledger = base_dir
+            .join("groups")
+            .join(&name_str)
+            .join("state")
+            .join("ledger")
+            .join("ledger.jsonl");
+        if let Ok(meta) = std::fs::metadata(&ledger) {
+            if let Ok(modified) = meta.modified() {
+                match &best {
+                    Some((_, prev_time)) if modified > *prev_time => {
+                        best = Some((name_str, modified));
+                    }
+                    None => {
+                        best = Some((name_str, modified));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    best.map(|(id, _)| id)
+}
+
 /// 程序入口
 ///
 /// 业务逻辑（含冷启动自举）：
@@ -167,10 +216,39 @@ async fn main() -> Result<()> {
     };
 
     // ============================================
-    // 第四步：启动 stdio MCP 服务器
-    // group_id 和 actor_id 由 initialize 握手后更新（当前用占位值）
+    // 第四步：确定 group_id 和 actor_id（不使用 unsafe set_var）
+    //
+    // MCP 工具通过参数传递 group_id 和 actor_id，而非全局环境变量
+    // 避免在多线程 tokio runtime 中调用 unsafe env::set_var 导致数据竞争（UB）
+    //
+    // 优先级：环境变量（外部注入） > 自动检测 > 默认值
     // ============================================
-    ghostcode_mcp::serve_stdio("default", "mcp", &daemon_addr).await?;
+    let group_id = {
+        let from_env = std::env::var("GHOSTCODE_GROUP_ID").unwrap_or_default();
+        if !from_env.is_empty() {
+            from_env
+        } else if let Some(gid) = detect_group_id(&base_dir) {
+            eprintln!("[GhostCode MCP] 自动检测 group_id: {}", gid);
+            gid
+        } else {
+            "default".to_string()
+        }
+    };
+
+    let actor_id = {
+        let from_env = std::env::var("GHOSTCODE_ACTOR_ID").unwrap_or_default();
+        if !from_env.is_empty() {
+            from_env
+        } else {
+            eprintln!("[GhostCode MCP] 使用默认 actor_id: claude-main");
+            "claude-main".to_string()
+        }
+    };
+
+    // ============================================
+    // 第五步：启动 stdio MCP 服务器
+    // ============================================
+    ghostcode_mcp::serve_stdio(&group_id, &actor_id, &daemon_addr).await?;
 
     Ok(())
 }

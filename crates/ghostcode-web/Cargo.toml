@@ -6,6 +6,12 @@ description = "GhostCode Web Dashboard HTTP 服务器"
 authors = ["Atlas.oi"]
 
 [dependencies]
+# CLI 参数解析
+clap = { workspace = true }
+
+# 日志初始化
+tracing-subscriber = { workspace = true }
+
 # 异步运行时
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -31,6 +37,9 @@ chrono = { workspace = true }
 # Home 目录
 dirs = "5"
 
+# 进程信号操作（kill_stale_listener 清理旧进程）
+libc = "0.2"
+
 # 异步流生成宏
 async-stream = "0.3"
 
@@ -43,3 +52,6 @@ tempfile = { workspace = true }
 tower = { version = "0.4", features = ["util"] }
 axum = { version = "0.7", features = ["json"] }
 tokio-stream = { version = "0.1" }
+proptest = "1"
+# 集成测试 HTTP 客户端（用于 shutdown_test.rs 验证 server 响应）
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

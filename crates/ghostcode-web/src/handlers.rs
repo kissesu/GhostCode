@@ -18,6 +18,63 @@ use ghostcode_ledger::query::{aggregate_agent_status, build_history_projection, 
 
 use crate::state::WebState;
 
+/// GET /api/active-group - 自动发现当前活跃的 Group
+///
+/// 业务逻辑：
+/// 1. 扫描 {data_root}/groups/ 目录下所有子目录
+/// 2. 检查每个子目录中是否存在 ledger.jsonl 文件
+/// 3. 按 ledger 文件的最后修改时间排序，返回最近活跃的 group ID
+/// 4. 如果没有任何 group，返回 null
+///
+/// @param state - 应用状态（含数据根目录）
+pub async fn handle_active_group(
+    State(state): State<WebState>,
+) -> impl IntoResponse {
+    let groups_dir = state.data_root.join("groups");
+
+    // groups 目录不存在时返回空
+    if !groups_dir.exists() {
+        return Json(serde_json::json!({ "group_id": serde_json::Value::Null })).into_response();
+    }
+
+    // 扫描所有子目录，找到有 ledger 文件且最近修改的 group
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+
+    if let Ok(entries) = std::fs::read_dir(&groups_dir) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            // 确保文件名是合法 UTF-8，非 UTF-8 名称直接跳过
+            // 避免 to_string_lossy() 产生替换字符 U+FFFD 导致意外行为
+            let group_id = match entry.file_name().to_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let ledger = match state.ledger_path(&group_id) {
+                Some(p) => p,
+                None => continue,
+            };
+            if let Ok(meta) = std::fs::metadata(&ledger) {
+                if let Ok(modified) = meta.modified() {
+                    match &best {
+                        Some((_, prev_time)) if modified > *prev_time => {
+                            best = Some((group_id, modified));
+                        }
+                        None => {
+                            best = Some((group_id, modified));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    let group_id = best.map(|(id, _)| id);
+    Json(serde_json::json!({ "group_id": group_id })).into_response()
+}
+
 /// 分页查询参数
 #[derive(Deserialize)]
 pub struct TimelineQuery {
@@ -51,7 +108,17 @@ pub async fn handle_dashboard_snapshot(
     State(state): State<WebState>,
     Path(group_id): Path<String>,
 ) -> impl IntoResponse {
-    let ledger_path = state.ledger_path(&group_id);
+    // 安全校验：拒绝非法 group_id（防止路径穿越攻击）
+    let ledger_path = match state.ledger_path(&group_id) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "group_id 包含非法字符" })),
+            )
+                .into_response();
+        }
+    };
     // 账本不存在时直接返回空快照（正常情况，不报错）
     if !ledger_path.exists() {
         let empty = ghostcode_types::dashboard::DashboardSnapshot {
@@ -94,7 +161,17 @@ pub async fn handle_timeline(
     Path(group_id): Path<String>,
     Query(params): Query<TimelineQuery>,
 ) -> impl IntoResponse {
-    let ledger_path = state.ledger_path(&group_id);
+    // 安全校验：拒绝非法 group_id（防止路径穿越攻击）
+    let ledger_path = match state.ledger_path(&group_id) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "group_id 包含非法字符" })),
+            )
+                .into_response();
+        }
+    };
     let page_size = params.page_size.unwrap_or(20).min(100);
     // 账本不存在时直接返回空分页（正常情况，不报错）
     if !ledger_path.exists() {
@@ -133,7 +210,17 @@ pub async fn handle_agents(
     State(state): State<WebState>,
     Path(group_id): Path<String>,
 ) -> impl IntoResponse {
-    let ledger_path = state.ledger_path(&group_id);
+    // 安全校验：拒绝非法 group_id（防止路径穿越攻击）
+    let ledger_path = match state.ledger_path(&group_id) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "group_id 包含非法字符" })),
+            )
+                .into_response();
+        }
+    };
     // 账本不存在时直接返回空列表（正常情况，不报错）
     if !ledger_path.exists() {
         return Json(Vec::<ghostcode_types::dashboard::AgentStatusView>::new()).into_response();

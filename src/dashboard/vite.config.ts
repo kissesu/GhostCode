@@ -17,6 +17,18 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:7070',
         changeOrigin: true,
+        // 禁用响应缓冲，确保 SSE（Server-Sent Events）流能实时推送到前端
+        // 不设此选项会导致 SSE 响应被 http-proxy 缓冲，前端 EventSource 无法建立连接
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            // 检测 SSE 响应（content-type: text/event-stream），禁用缓冲
+            const contentType = proxyRes.headers['content-type'] || '';
+            if (contentType.includes('text/event-stream')) {
+              // 设置 no-transform 防止中间层压缩或缓冲
+              proxyRes.headers['cache-control'] = 'no-cache, no-transform';
+            }
+          });
+        },
       },
     },
   },

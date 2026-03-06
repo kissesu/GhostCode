@@ -8,7 +8,7 @@
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, Method as HttpMethod, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -18,12 +18,55 @@ use axum::{
 };
 use ghostcode_types::ipc::DaemonRequest;
 use std::convert::Infallible;
+use std::time::Duration;
 use tokio_stream::StreamExt;
+use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
-use crate::handlers::{handle_agents, handle_dashboard_snapshot, handle_health, handle_timeline};
+use crate::handlers::{handle_active_group, handle_agents, handle_dashboard_snapshot, handle_health, handle_timeline};
 use crate::ipc::{call_daemon, IpcError};
 use crate::sse::tail_ledger_as_sse;
 use crate::state::WebState;
+
+/// 构建 CORS 中间件层
+///
+/// 根据提供的源列表创建 CorsLayer。
+/// 始终包含默认源：http://localhost:5173 和 http://127.0.0.1:5173
+/// 允许方法：GET, POST, OPTIONS
+/// 允许头：content-type, accept
+///
+/// @param origins - 允许的 CORS 源列表（额外源，会与默认源合并）
+/// @returns 配置好的 CorsLayer
+pub fn build_cors_layer(origins: &[String]) -> CorsLayer {
+    // 合并用户自定义源和默认源，避免重复
+    let mut all_origins: Vec<String> = origins.to_vec();
+    let defaults = ["http://localhost:5173", "http://127.0.0.1:5173"];
+    for d in &defaults {
+        if !all_origins.iter().any(|o| o == *d) {
+            all_origins.push(d.to_string());
+        }
+    }
+
+    // 将字符串源转换为 HeaderValue 列表
+    // 解析失败时输出警告（而非静默丢弃），帮助排查 CORS 配置错误
+    let mut origin_values: Vec<axum::http::HeaderValue> = Vec::new();
+    for o in &all_origins {
+        match o.parse::<axum::http::HeaderValue>() {
+            Ok(v) => origin_values.push(v),
+            Err(e) => {
+                tracing::warn!("[GhostCode Web] CORS origin 格式非法，已跳过: {} - {}", o, e);
+            }
+        }
+    }
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origin_values))
+        .allow_methods(AllowMethods::list([
+            HttpMethod::GET,
+            HttpMethod::POST,
+            HttpMethod::OPTIONS,
+        ]))
+        .allow_headers(AllowHeaders::list([header::CONTENT_TYPE, header::ACCEPT]))
+}
 
 /// 创建 axum Router（供测试和 main 共用）
 ///
@@ -42,6 +85,8 @@ pub fn create_router(state: WebState) -> Router {
     Router::new()
         // 健康检查
         .route("/health", get(handle_health))
+        // 自动发现活跃 Group（前端启动时调用）
+        .route("/api/active-group", get(handle_active_group))
         // Dashboard REST API
         .route(
             "/api/groups/:group_id/dashboard",
@@ -74,8 +119,20 @@ pub fn create_router(state: WebState) -> Router {
 async fn handle_sse_stream(
     State(state): State<WebState>,
     Path(group_id): Path<String>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let ledger_path = state.ledger_path(&group_id);
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    // 安全校验：拒绝非法 group_id（防止路径穿越攻击）
+    let ledger_path = match state.ledger_path(&group_id) {
+        Some(p) => p,
+        None => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": "group_id 包含非法字符" })),
+            )
+                .into_response();
+        }
+    };
     // 新连接从 EOF 开始，只推送新事件
     // C2 修复：移除命名事件类型，使用默认 message 事件
     // 前端 EventSource.onmessage 只能接收默认 message 事件，
@@ -84,7 +141,11 @@ async fn handle_sse_stream(
         Ok::<_, Infallible>(Event::default().data(e.data))
     });
 
-    Sse::new(sse_stream).keep_alive(KeepAlive::default())
+    // keepalive 间隔从默认 15 秒缩短到 5 秒
+    // 配合初始心跳事件，确保代理缓冲区及时冲刷
+    Sse::new(sse_stream).keep_alive(
+        KeepAlive::new().interval(Duration::from_secs(5))
+    ).into_response()
 }
 
 /// GET /api/groups/:group_id/skills - 列出 Skill 候选

@@ -18,21 +18,17 @@
 
 // 首次运行安装（平台检测 + 二进制部署到 ~/.ghostcode/bin/ghostcoded）
 import { installGhostcode } from "./install.js";
-// Hook 初始化（注册 PreToolUse 和 Stop 处理器）
-import { initializeHooks } from "./hooks/index.js";
 
 // ============================================
 // 首次运行时检测平台并部署 Daemon 二进制
 // 必须在 MCP server 启动之前完成安装
+//
+// 注意：initializeHooks() 已移除顶层调用。
+// Hook 系统由 hooks.json + scripts/*.mjs 驱动（运行时双轨架构）。
+// TypeScript 层的 initializeHooks 保留为可选的显式初始化 API，
+// 供有需要通过 TypeScript 注册 Hook 的场景手动调用。
 // ============================================
 await installGhostcode();
-
-// ============================================
-// 注册 Claude Code 生命周期 Hook 处理器
-// PreToolUse: 工具调用前确保 Daemon 已启动
-// Stop: 会话结束时停止心跳并关闭 Daemon
-// ============================================
-initializeHooks();
 
 // ============================================
 // Daemon 管理模块导出（T17 实现）
