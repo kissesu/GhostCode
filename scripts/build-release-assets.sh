@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # @file build-release-assets.sh
 # @description Release 产物组装脚本
-#              接收包含六个原始二进制的 ASSET_DIR，将同平台的两个二进制
-#              (ghostcoded + ghostcode-mcp) 打包为平台 bundle tar.gz
+#              接收包含九个原始二进制的 ASSET_DIR，将同平台的三个二进制
+#              (ghostcoded + ghostcode-mcp + ghostcode-wrapper) 打包为平台 bundle tar.gz
 #
 #              平台映射：
 #                aarch64-apple-darwin    -> darwin-arm64
@@ -36,9 +36,9 @@ fi
 
 # ============================================================
 # 前置检查：缺失任何二进制时立即失败
-# 双二进制完整性是核心保障，不允许部分成功
+# 三二进制完整性是核心保障，不允许部分成功
 # ============================================================
-echo "[检查] 验证六个原始二进制完整性..."
+echo "[检查] 验证九个原始二进制完整性..."
 
 # 检查 ghostcoded 三平台二进制
 for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
@@ -59,11 +59,21 @@ for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu;
   fi
 done
 
-echo "[通过] 六个原始二进制均存在"
+# 检查 ghostcode-wrapper 三平台二进制（多模型协作必需组件）
+for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+  binary="${ASSET_DIR}/ghostcode-wrapper-${target}"
+  if [[ ! -f "${binary}" ]]; then
+    echo "[错误] 缺失 ghostcode-wrapper 二进制：${binary}"
+    echo "[错误] ghostcode-wrapper 是多模型协作必需组件，不允许跳过，构建终止"
+    exit 1
+  fi
+done
+
+echo "[通过] 九个原始二进制均存在"
 
 # ============================================================
 # assemble_platform_bundle 函数
-# 将同一平台的 ghostcoded 和 ghostcode-mcp 打包为 tar.gz
+# 将同一平台的 ghostcoded、ghostcode-mcp 和 ghostcode-wrapper 打包为 tar.gz
 #
 # 参数：
 #   $1 - target：Rust 编译目标三元组（如 aarch64-apple-darwin）
@@ -82,14 +92,15 @@ assemble_platform_bundle() {
   trap "rm -rf ${tmpdir}" RETURN
 
   # ============================================================
-  # 复制两个二进制到临时目录
-  # 去掉平台后缀，tar 内文件名为 ghostcoded 和 ghostcode-mcp
+  # 复制三个二进制到临时目录
+  # 去掉平台后缀，tar 内文件名为 ghostcoded、ghostcode-mcp 和 ghostcode-wrapper
   # ============================================================
-  cp "${ASSET_DIR}/ghostcoded-${target}"    "${tmpdir}/ghostcoded"
-  cp "${ASSET_DIR}/ghostcode-mcp-${target}" "${tmpdir}/ghostcode-mcp"
+  cp "${ASSET_DIR}/ghostcoded-${target}"        "${tmpdir}/ghostcoded"
+  cp "${ASSET_DIR}/ghostcode-mcp-${target}"     "${tmpdir}/ghostcode-mcp"
+  cp "${ASSET_DIR}/ghostcode-wrapper-${target}" "${tmpdir}/ghostcode-wrapper"
 
   # 赋予执行权限
-  chmod +x "${tmpdir}/ghostcoded" "${tmpdir}/ghostcode-mcp"
+  chmod +x "${tmpdir}/ghostcoded" "${tmpdir}/ghostcode-mcp" "${tmpdir}/ghostcode-wrapper"
 
   # ============================================================
   # 打包为 tar.gz，输出到 ASSET_DIR
@@ -98,7 +109,8 @@ assemble_platform_bundle() {
   tar -czf "${ASSET_DIR}/${bundle_name}" \
     -C "${tmpdir}" \
     ghostcoded \
-    ghostcode-mcp
+    ghostcode-mcp \
+    ghostcode-wrapper
 
   echo "[完成] ${bundle_name} 已生成"
 }

@@ -50,6 +50,19 @@
 #       hook-pre-tool-use.mjs
 #       hook-stop.mjs
 #       hook-user-prompt-submit.mjs
+#       hook-session-start.mjs
+#       hook-session-end.mjs
+#       hook-subagent-start.mjs
+#       hook-subagent-stop.mjs
+#       hook-pre-compact.mjs
+#       lib/
+#         daemon-client.mjs
+#         stdin.mjs
+#     prompts/
+#       codex-analyzer.md
+#       gemini-analyzer.md
+#       codex-reviewer.md
+#       gemini-reviewer.md
 #     dist/
 #       index.js       (核心模块，被 scripts/*.mjs 动态 import)
 #       cli.js         (CLI 工具)
@@ -58,6 +71,10 @@
 #       ghostcode-mcp-darwin-arm64
 #       ghostcode-mcp-darwin-x64
 #       ghostcode-mcp-linux-x64
+#       ghostcode-wrapper              (平台检测启动器)
+#       ghostcode-wrapper-darwin-arm64
+#       ghostcode-wrapper-darwin-x64
+#       ghostcode-wrapper-linux-x64
 #       ghostcoded-darwin-arm64
 #       ghostcoded-darwin-x64
 #       ghostcoded-linux-x64
@@ -207,14 +224,53 @@ else
 fi
 
 # 复制 Scripts（Hook 处理脚本，被 hooks.json 引用）
-for script in run.mjs hook-pre-tool-use.mjs hook-stop.mjs hook-user-prompt-submit.mjs; do
-  if [[ ! -f "$PLUGIN_SRC/scripts/$script" ]]; then
-    echo "错误: 缺少 Hook 脚本: $PLUGIN_SRC/scripts/$script" >&2
-    exit 1
+# 复制全部 .mjs 脚本（排除 install-wrapper.mjs，该脚本仅用于本地开发）
+for script in "$PLUGIN_SRC/scripts/"*.mjs; do
+  if [[ -f "$script" ]]; then
+    script_name=$(basename "$script")
+    # install-wrapper.mjs 是开发用脚本，不纳入分发
+    if [[ "$script_name" == "install-wrapper.mjs" ]]; then
+      echo "  跳过: scripts/$script_name (开发用，不分发)"
+      continue
+    fi
+    cp "$script" "$OUTPUT_DIR/scripts/$script_name"
+    echo "  复制: scripts/$script_name"
   fi
-  cp "$PLUGIN_SRC/scripts/$script" "$OUTPUT_DIR/scripts/$script"
-  echo "  复制: scripts/$script"
 done
+
+# 复制 lib 目录（daemon-client.mjs, stdin.mjs 等共享模块）
+if [[ -d "$PLUGIN_SRC/scripts/lib" ]]; then
+  mkdir -p "$OUTPUT_DIR/scripts/lib"
+  for lib_file in "$PLUGIN_SRC/scripts/lib/"*.mjs; do
+    if [[ -f "$lib_file" ]]; then
+      cp "$lib_file" "$OUTPUT_DIR/scripts/lib/$(basename "$lib_file")"
+      echo "  复制: scripts/lib/$(basename "$lib_file")"
+    fi
+  done
+else
+  echo "警告: Plugin 源目录下不存在 scripts/lib/ 目录" >&2
+fi
+
+# 复制 Prompts 目录（多模型协作的角色提示词文件）
+# W3-review：改为动态扫描 *.md 文件，新增 prompt 文件时无需手动更新此处
+echo "  复制 Prompts 目录..."
+mkdir -p "$OUTPUT_DIR/prompts"
+PROMPT_COUNT=0
+if [[ -d "$PLUGIN_SRC/prompts" ]]; then
+  for prompt in "$PLUGIN_SRC/prompts/"*.md; do
+    if [[ -f "$prompt" ]]; then
+      prompt_name=$(basename "$prompt")
+      cp "$prompt" "$OUTPUT_DIR/prompts/$prompt_name"
+      echo "  复制: prompts/$prompt_name"
+      PROMPT_COUNT=$((PROMPT_COUNT + 1))
+    fi
+  done
+fi
+if [[ "$PROMPT_COUNT" -eq 0 ]]; then
+  echo "错误: prompts 目录为空或不存在: $PLUGIN_SRC/prompts/" >&2
+  exit 1
+fi
+echo "  共复制 $PROMPT_COUNT 个角色提示词文件"
 
 # ============================================
 # 第四步：复制二进制文件
@@ -287,6 +343,46 @@ for bin in "${DAEMON_BINARIES[@]}"; do
   echo "  复制: bin/$bin (Daemon)"
 done
 
+# Wrapper 三平台二进制（多模型协作的 AI 后端统一调用 CLI 工具）
+WRAPPER_BINARIES=(
+  "ghostcode-wrapper-darwin-arm64"
+  "ghostcode-wrapper-darwin-x64"
+  "ghostcode-wrapper-linux-x64"
+)
+
+for bin in "${WRAPPER_BINARIES[@]}"; do
+  src="$BINARIES_DIR/$bin"
+  dst="$OUTPUT_DIR/bin/$bin"
+
+  if [[ ! -f "$src" ]]; then
+    echo "错误: 缺少 Wrapper 二进制文件: $src" >&2
+    exit 1
+  fi
+
+  cp "$src" "$dst"
+  chmod +x "$dst"
+  echo "  复制: bin/$bin (Wrapper)"
+done
+
+# 生成 Wrapper 平台检测启动器脚本
+# SKILL.md 中通过 ~/.ghostcode/bin/ghostcode-wrapper 调用，
+# session-start hook 会将此启动器 symlink 到用户目录
+cat > "$OUTPUT_DIR/bin/ghostcode-wrapper" << 'LAUNCHER_EOF'
+#!/bin/sh
+# ghostcode-wrapper 平台检测启动器
+# 自动选择当前平台对应的 Wrapper 二进制并执行
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLATFORM="$(uname -s)-$(uname -m)"
+case "$PLATFORM" in
+  Darwin-arm64)  exec "$SCRIPT_DIR/ghostcode-wrapper-darwin-arm64" "$@" ;;
+  Darwin-x86_64) exec "$SCRIPT_DIR/ghostcode-wrapper-darwin-x64" "$@" ;;
+  Linux-x86_64)  exec "$SCRIPT_DIR/ghostcode-wrapper-linux-x64" "$@" ;;
+  *) echo "[GhostCode] 不支持的平台: $PLATFORM" >&2; exit 1 ;;
+esac
+LAUNCHER_EOF
+chmod +x "$OUTPUT_DIR/bin/ghostcode-wrapper"
+echo "  生成: bin/ghostcode-wrapper (平台检测启动器)"
+
 # ============================================
 # 第五步：生成 package.json
 # 新架构移除了 main/exports 字段（dist/index.js 由 scripts/*.mjs 动态 import）
@@ -310,7 +406,8 @@ cat > "$OUTPUT_DIR/package.json" << EOF
     "skills",
     ".mcp.json",
     "scripts",
-    "bin"
+    "bin",
+    "prompts"
   ],
   "engines": {
     "node": ">=20"
@@ -337,19 +434,37 @@ REQUIRED_FILES=(
   ".claude-plugin/plugin.json"
   "hooks/hooks.json"
   ".mcp.json"
+  # Hook 脚本
   "scripts/run.mjs"
   "scripts/hook-pre-tool-use.mjs"
   "scripts/hook-stop.mjs"
   "scripts/hook-user-prompt-submit.mjs"
+  "scripts/hook-session-start.mjs"
+  "scripts/hook-session-end.mjs"
+  "scripts/hook-subagent-start.mjs"
+  "scripts/hook-subagent-stop.mjs"
+  "scripts/hook-pre-compact.mjs"
+  "scripts/lib/daemon-client.mjs"
+  "scripts/lib/stdin.mjs"
+  # TS 产物
   "dist/index.js"
   "dist/cli.js"
+  # MCP Server 二进制
   "bin/ghostcode-mcp"
   "bin/ghostcode-mcp-darwin-arm64"
   "bin/ghostcode-mcp-darwin-x64"
   "bin/ghostcode-mcp-linux-x64"
+  # Daemon 二进制
   "bin/ghostcoded-darwin-arm64"
   "bin/ghostcoded-darwin-x64"
   "bin/ghostcoded-linux-x64"
+  # Wrapper 二进制
+  "bin/ghostcode-wrapper"
+  "bin/ghostcode-wrapper-darwin-arm64"
+  "bin/ghostcode-wrapper-darwin-x64"
+  "bin/ghostcode-wrapper-linux-x64"
+  # Prompts 目录：W3-review 改为动态扫描，此处仅验证目录存在
+  # 实际文件数已在第三步动态扫描时验证（PROMPT_COUNT > 0）
 )
 
 ALL_OK=true
@@ -361,6 +476,15 @@ for f in "${REQUIRED_FILES[@]}"; do
     ALL_OK=false
   fi
 done
+
+# W3-review：验证 Prompts 目录非空（动态扫描，不依赖硬编码列表）
+PROMPT_FILES_COUNT=$(ls "$OUTPUT_DIR/prompts/"*.md 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$PROMPT_FILES_COUNT" -gt 0 ]]; then
+  echo "  OK: prompts/ ($PROMPT_FILES_COUNT 个文件)"
+else
+  echo "  缺失: prompts/ 目录为空" >&2
+  ALL_OK=false
+fi
 
 # 验证 Skills 目录（七个标准 skill）
 for skill in team-research team-plan team-exec team-review spec-research spec-plan spec-impl; do

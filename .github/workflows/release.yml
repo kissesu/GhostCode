@@ -2,8 +2,8 @@
 #
 # 触发条件：推送 v* tag（如 v0.1.0）
 # 步骤：
-#   1. build-binaries    — 矩阵并行构建三平台双 Rust 二进制（ghostcoded + ghostcode-mcp）
-#   2. package-bundles   — 下载六个原始二进制，组装平台 bundle + 生成 SHA256SUMS
+#   1. build-binaries    — 矩阵并行构建三平台三 Rust 二进制（ghostcoded + ghostcode-mcp + ghostcode-wrapper）
+#   2. package-bundles   — 下载九个原始二进制，组装平台 bundle + 生成 SHA256SUMS
 #   3. package           — 编译 TS + 组装 Plugin npm 包
 #   4. publish           — 创建 GitHub Release（上传原始二进制 + bundle + SHA256SUMS）+ 发布 npm 包
 #
@@ -28,8 +28,8 @@ env:
 jobs:
   # ============================================================
   # job: build-binaries（矩阵）
-  # 三平台并行构建双二进制：ghostcode-daemon (ghostcoded) + ghostcode-mcp
-  # 每个矩阵 job 同时构建两个包，产出六个原始二进制（三平台各两个）
+  # 三平台并行构建三二进制：ghostcode-daemon (ghostcoded) + ghostcode-mcp + ghostcode-wrapper
+  # 每个矩阵 job 同时构建三个包，产出九个原始二进制（三平台各三个）
   # ============================================================
   build-binaries:
     name: 构建 ${{ matrix.target }}
@@ -87,8 +87,16 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} -p ghostcode-mcp
 
       # ============================================================
-      # 将两个二进制重命名为含平台信息的名称，准备上传
-      # 文件命名格式：ghostcoded-{target} / ghostcode-mcp-{target}
+      # 构建 ghostcode-wrapper 二进制
+      # release 模式，-p 指定只编译 wrapper 包
+      # wrapper 是多模型协作的 AI 后端统一调用 CLI 工具
+      # ============================================================
+      - name: cargo build --release ghostcode-wrapper
+        run: cargo build --release --target ${{ matrix.target }} -p ghostcode-wrapper
+
+      # ============================================================
+      # 将三个二进制重命名为含平台信息的名称，准备上传
+      # 文件命名格式：ghostcoded-{target} / ghostcode-mcp-{target} / ghostcode-wrapper-{target}
       # ============================================================
       - name: 重命名二进制（含平台信息）
         shell: bash
@@ -97,8 +105,10 @@ jobs:
              ghostcoded-${{ matrix.target }}
           cp target/${{ matrix.target }}/release/ghostcode-mcp \
              ghostcode-mcp-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/ghostcode-wrapper \
+             ghostcode-wrapper-${{ matrix.target }}
 
-      # 上传两个二进制为 artifact，供 package-bundles job 汇总
+      # 上传三个二进制为 artifact，供 package-bundles job 汇总
       - name: 上传二进制 artifact
         uses: actions/upload-artifact@v4
         with:
@@ -106,11 +116,12 @@ jobs:
           path: |
             ghostcoded-${{ matrix.target }}
             ghostcode-mcp-${{ matrix.target }}
+            ghostcode-wrapper-${{ matrix.target }}
           retention-days: 1
 
   # ============================================================
   # job: package-bundles
-  # 下载六个原始二进制，组装平台 bundle + 生成 SHA256SUMS
+  # 下载九个原始二进制，组装平台 bundle + 生成 SHA256SUMS
   # ============================================================
   package-bundles:
     name: 组装平台 Bundle
@@ -130,10 +141,10 @@ jobs:
           path: assets/
 
       # ============================================================
-      # 验证六个二进制均已下载
-      # 缺失 ghostcode-mcp 时立即失败，不允许继续组装
+      # 验证九个二进制均已下载
+      # 缺失任何核心组件时立即失败，不允许继续组装
       # ============================================================
-      - name: 验证六个原始二进制完整性
+      - name: 验证九个原始二进制完整性
         run: |
           ls -la assets/
           # 验证 ghostcoded 三平台
@@ -144,7 +155,11 @@ jobs:
           test -f assets/ghostcode-mcp-aarch64-apple-darwin    || (echo "缺少 ghostcode-mcp aarch64-apple-darwin 二进制，ghostcode-mcp 是核心组件，构建终止" && exit 1)
           test -f assets/ghostcode-mcp-x86_64-apple-darwin     || (echo "缺少 ghostcode-mcp x86_64-apple-darwin 二进制，ghostcode-mcp 是核心组件，构建终止" && exit 1)
           test -f assets/ghostcode-mcp-x86_64-unknown-linux-gnu || (echo "缺少 ghostcode-mcp x86_64-unknown-linux-gnu 二进制，ghostcode-mcp 是核心组件，构建终止" && exit 1)
-          echo "六个原始二进制验证通过"
+          # 验证 ghostcode-wrapper 三平台（多模型协作必需组件）
+          test -f assets/ghostcode-wrapper-aarch64-apple-darwin    || (echo "缺少 ghostcode-wrapper aarch64-apple-darwin 二进制" && exit 1)
+          test -f assets/ghostcode-wrapper-x86_64-apple-darwin     || (echo "缺少 ghostcode-wrapper x86_64-apple-darwin 二进制" && exit 1)
+          test -f assets/ghostcode-wrapper-x86_64-unknown-linux-gnu || (echo "缺少 ghostcode-wrapper x86_64-unknown-linux-gnu 二进制" && exit 1)
+          echo "九个原始二进制验证通过"
 
       # 赋予脚本执行权限
       - name: 赋予构建脚本执行权限
@@ -168,6 +183,7 @@ jobs:
           path: |
             assets/ghostcoded-*
             assets/ghostcode-mcp-*
+            assets/ghostcode-wrapper-*
             assets/ghostcode-*.tar.gz
             assets/ghostcode_SHA256SUMS
           retention-days: 7
@@ -197,7 +213,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
           run_install: false
 
-      # 下载三平台六个二进制 artifact（ghostcoded + ghostcode-mcp）
+      # 下载三平台九个二进制 artifact（ghostcoded + ghostcode-mcp + ghostcode-wrapper）
       - name: 下载所有二进制 artifact
         uses: actions/download-artifact@v4
         with:
@@ -205,9 +221,10 @@ jobs:
           merge-multiple: true
           path: binaries/
 
-      # 验证六个二进制均已下载，并将 target triple 格式重命名为 platform 格式
+      # 验证九个二进制均已下载，并将 target triple 格式重命名为 platform 格式
       # ghostcoded-{target} → ghostcoded-{platform}（daemon 三平台）
       # ghostcode-mcp-{target} → ghostcode-mcp-{platform}（MCP Server 三平台）
+      # ghostcode-wrapper-{target} → ghostcode-wrapper-{platform}（wrapper 三平台）
       - name: 验证并重命名二进制文件
         run: |
           ls -la binaries/
@@ -219,6 +236,10 @@ jobs:
           test -f binaries/ghostcode-mcp-aarch64-apple-darwin    || (echo "缺少 darwin-arm64 ghostcode-mcp 二进制" && exit 1)
           test -f binaries/ghostcode-mcp-x86_64-apple-darwin     || (echo "缺少 darwin-x64 ghostcode-mcp 二进制" && exit 1)
           test -f binaries/ghostcode-mcp-x86_64-unknown-linux-gnu || (echo "缺少 linux-x64 ghostcode-mcp 二进制" && exit 1)
+          # 验证 ghostcode-wrapper 三平台
+          test -f binaries/ghostcode-wrapper-aarch64-apple-darwin    || (echo "缺少 darwin-arm64 ghostcode-wrapper 二进制" && exit 1)
+          test -f binaries/ghostcode-wrapper-x86_64-apple-darwin     || (echo "缺少 darwin-x64 ghostcode-wrapper 二进制" && exit 1)
+          test -f binaries/ghostcode-wrapper-x86_64-unknown-linux-gnu || (echo "缺少 linux-x64 ghostcode-wrapper 二进制" && exit 1)
           # 重命名为 pack-plugin.sh 期望的 platform 格式
           cp binaries/ghostcoded-aarch64-apple-darwin      binaries/ghostcoded-darwin-arm64
           cp binaries/ghostcoded-x86_64-apple-darwin       binaries/ghostcoded-darwin-x64
@@ -226,7 +247,10 @@ jobs:
           cp binaries/ghostcode-mcp-aarch64-apple-darwin      binaries/ghostcode-mcp-darwin-arm64
           cp binaries/ghostcode-mcp-x86_64-apple-darwin       binaries/ghostcode-mcp-darwin-x64
           cp binaries/ghostcode-mcp-x86_64-unknown-linux-gnu  binaries/ghostcode-mcp-linux-x64
-          echo "六个二进制验证通过并重命名完成"
+          cp binaries/ghostcode-wrapper-aarch64-apple-darwin      binaries/ghostcode-wrapper-darwin-arm64
+          cp binaries/ghostcode-wrapper-x86_64-apple-darwin       binaries/ghostcode-wrapper-darwin-x64
+          cp binaries/ghostcode-wrapper-x86_64-unknown-linux-gnu  binaries/ghostcode-wrapper-linux-x64
+          echo "九个二进制验证通过并重命名完成"
 
       # 安装 TS 依赖并编译
       - name: pnpm install
@@ -249,21 +273,40 @@ jobs:
             --version "${RELEASE_VERSION#v}" \
             --output ghostcode-plugin/
 
-      # 验证 Plugin 包结构（ghostcoded 三平台 + ghostcode-mcp 三平台 + 启动器脚本）
+      # 验证 Plugin 包结构（三类二进制各三平台 + 启动器脚本 + prompts + hook 脚本）
       - name: 验证 Plugin 包结构
         run: |
           echo "Plugin 包内容："
           find ghostcode-plugin/ -type f | sort
           test -f ghostcode-plugin/package.json          || (echo "缺少 package.json" && exit 1)
           test -f ghostcode-plugin/dist/index.js         || (echo "缺少 dist/index.js" && exit 1)
+          # MCP Server 二进制
           test -f ghostcode-plugin/bin/ghostcode-mcp               || (echo "缺少 MCP 启动器脚本" && exit 1)
           test -f ghostcode-plugin/bin/ghostcode-mcp-darwin-arm64  || (echo "缺少 darwin-arm64 MCP 二进制" && exit 1)
           test -f ghostcode-plugin/bin/ghostcode-mcp-darwin-x64    || (echo "缺少 darwin-x64 MCP 二进制" && exit 1)
           test -f ghostcode-plugin/bin/ghostcode-mcp-linux-x64     || (echo "缺少 linux-x64 MCP 二进制" && exit 1)
+          # Daemon 二进制
           test -f ghostcode-plugin/bin/ghostcoded-darwin-arm64     || (echo "缺少 darwin-arm64 Daemon 二进制" && exit 1)
           test -f ghostcode-plugin/bin/ghostcoded-darwin-x64       || (echo "缺少 darwin-x64 Daemon 二进制" && exit 1)
           test -f ghostcode-plugin/bin/ghostcoded-linux-x64        || (echo "缺少 linux-x64 Daemon 二进制" && exit 1)
-          test -f ghostcode-plugin/.claude/settings.json           || (echo "缺少 .claude/settings.json" && exit 1)
+          # Wrapper 二进制
+          test -f ghostcode-plugin/bin/ghostcode-wrapper               || (echo "缺少 Wrapper 启动器脚本" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcode-wrapper-darwin-arm64  || (echo "缺少 darwin-arm64 Wrapper 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcode-wrapper-darwin-x64    || (echo "缺少 darwin-x64 Wrapper 二进制" && exit 1)
+          test -f ghostcode-plugin/bin/ghostcode-wrapper-linux-x64     || (echo "缺少 linux-x64 Wrapper 二进制" && exit 1)
+          # Prompts
+          test -f ghostcode-plugin/prompts/codex-analyzer.md  || (echo "缺少 codex-analyzer.md" && exit 1)
+          test -f ghostcode-plugin/prompts/gemini-analyzer.md || (echo "缺少 gemini-analyzer.md" && exit 1)
+          test -f ghostcode-plugin/prompts/codex-reviewer.md  || (echo "缺少 codex-reviewer.md" && exit 1)
+          test -f ghostcode-plugin/prompts/gemini-reviewer.md || (echo "缺少 gemini-reviewer.md" && exit 1)
+          # Hook 脚本
+          test -f ghostcode-plugin/scripts/hook-session-start.mjs  || (echo "缺少 hook-session-start.mjs" && exit 1)
+          test -f ghostcode-plugin/scripts/hook-session-end.mjs    || (echo "缺少 hook-session-end.mjs" && exit 1)
+          test -f ghostcode-plugin/scripts/hook-subagent-start.mjs || (echo "缺少 hook-subagent-start.mjs" && exit 1)
+          test -f ghostcode-plugin/scripts/hook-subagent-stop.mjs  || (echo "缺少 hook-subagent-stop.mjs" && exit 1)
+          test -f ghostcode-plugin/scripts/hook-pre-compact.mjs    || (echo "缺少 hook-pre-compact.mjs" && exit 1)
+          test -f ghostcode-plugin/scripts/lib/daemon-client.mjs   || (echo "缺少 lib/daemon-client.mjs" && exit 1)
+          test -f ghostcode-plugin/scripts/lib/stdin.mjs           || (echo "缺少 lib/stdin.mjs" && exit 1)
 
       # 打包为 .tgz 用于 Release 附件
       - name: npm pack

@@ -93,6 +93,46 @@ function resolveGroupId() {
 }
 
 // ============================================
+// 显示名称生成
+// ============================================
+
+/**
+ * 根据 agent_type 生成人类可读的显示名称
+ *
+ * 转换规则：
+ * - "feature-dev:code-reviewer" -> "Code Reviewer"（取冒号后部分）
+ * - "general-purpose" -> "General Purpose"（直接转换）
+ * - kebab-case 和 snake_case 转换为 Title Case
+ *
+ * @param {string|null|undefined} agentType - Claude Code 传入的 agent_type 标识
+ * @returns {string|null} 人类可读名称，无法生成时返回 null
+ */
+/**
+ * 将单词首字母大写
+ *
+ * @param {string} word - 待转换的单词
+ * @returns {string} 首字母大写的单词
+ */
+function capitalizeWord(word) {
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+function generateDisplayName(agentType) {
+  if (!agentType || agentType.trim() === '') return null;
+  // W3 修复：取冒号后部分，若为空则回退到冒号前部分
+  // 例如 "feature-dev:" → pop() 返回空字符串 → 回退到 "feature-dev"
+  let part = agentType;
+  if (agentType.includes(':')) {
+    const segments = agentType.split(':');
+    const last = segments.pop();
+    part = (last && last.trim() !== '') ? last : segments[0] || agentType;
+  }
+  // kebab-case / snake_case 转 Title Case，过滤空元素防止多余空格
+  const result = part.split(/[-_]/).filter(Boolean).map(capitalizeWord).join(' ');
+  return result || null;
+}
+
+// ============================================
 // 主逻辑
 // ============================================
 
@@ -101,9 +141,9 @@ function resolveGroupId() {
  *
  * 业务逻辑说明：
  * 1. 从 stdin 读取 Claude Code 传入的事件 JSON
- * 2. 提取子 Agent ID 和会话 ID
+ * 2. 提取子 Agent ID、会话 ID、agent_type 并生成 display_name
  * 3. 将子 Agent 记录追加到 subagents.json 状态文件
- * 4. 向 Daemon 注册 Actor（IPC actor_start）
+ * 4. 向 Daemon 注册 Actor（IPC actor_start），携带 display_name 和 agent_type
  */
 async function main() {
   // ============================================
@@ -125,6 +165,15 @@ async function main() {
   const inner = event?.event ?? event;
   const agentId = inner?.agent_id || inner?.agentId || `agent-${Date.now()}`;
   const sessionId = inner?.session_id || inner?.sessionId || "";
+  // W5 修复：无 agent_id 时记录错误并提前退出，不写入无效数据
+  if (!inner?.agent_id && !inner?.agentId) {
+    console.error("[GhostCode] SubagentStart: stdin 中未找到 agent_id 字段，跳过注册");
+    process.exit(0);
+  }
+
+  // 提取 agent_type 并生成人类可读的 display_name
+  const agentType = inner?.agent_type || inner?.agentType || null;
+  const displayName = generateDisplayName(agentType);
 
   // ============================================
   // 第三步：记录子 Agent 到状态文件
@@ -134,6 +183,8 @@ async function main() {
   state.agents[agentId] = {
     startedAt: new Date().toISOString(),
     sessionId,
+    agentType,
+    displayName,
   };
   writeSubagentsState(state);
 
@@ -153,11 +204,11 @@ async function main() {
     // 从 groups 目录获取当前活跃的 group_id
     const groupId = resolveGroupId();
     if (groupId) {
-      const resp = await callDaemon("actor_start", {
-        group_id: groupId,
-        actor_id: agentId,
-        by: "system",
-      });
+      // 仅在有值时附加可选字段，避免发送 null（与 Rust 侧惯例一致）
+      const ipcArgs = { group_id: groupId, actor_id: agentId, by: "system" };
+      if (displayName) ipcArgs.display_name = displayName;
+      if (agentType) ipcArgs.agent_type = agentType;
+      const resp = await callDaemon("actor_start", ipcArgs);
       if (resp?.ok) {
         console.log(`[GhostCode] SubagentStart: Actor ${agentId} 已向 Daemon 注册`);
       } else {
