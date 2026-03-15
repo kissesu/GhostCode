@@ -37,13 +37,10 @@
 #     hooks/
 #       hooks.json
 #     skills/
-#       team-research/SKILL.md
-#       team-plan/SKILL.md
-#       team-exec/SKILL.md
-#       team-review/SKILL.md
-#       spec-research/SKILL.md
-#       spec-plan/SKILL.md
-#       spec-impl/SKILL.md
+#       research/SKILL.md
+#       plan/SKILL.md
+#       execute/SKILL.md
+#       review/SKILL.md
 #     .mcp.json
 #     scripts/
 #       run.mjs
@@ -392,7 +389,7 @@ echo "第五步：生成 package.json..."
 
 cat > "$OUTPUT_DIR/package.json" << EOF
 {
-  "name": "@ghostcode/plugin",
+  "name": "ghostcode",
   "version": "${VERSION}",
   "description": "GhostCode - 多 Agent 协作开发平台 Claude Code Plugin",
   "type": "module",
@@ -486,8 +483,8 @@ else
   ALL_OK=false
 fi
 
-# 验证 Skills 目录（七个标准 skill）
-for skill in team-research team-plan team-exec team-review spec-research spec-plan spec-impl; do
+# 验证 Skills 目录（四个统一 skill：gc:research/plan/execute/review）
+for skill in research plan execute review; do
   if [[ -f "$OUTPUT_DIR/skills/$skill/SKILL.md" ]]; then
     echo "  OK: skills/$skill/SKILL.md"
   else

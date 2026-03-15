@@ -26,8 +26,8 @@ if [[ ! -d "${ASSET_DIR}" ]]; then
   exit 1
 fi
 
-# SHA256SUMS 输出文件路径
-SUMS_FILE="${ASSET_DIR}/ghostcode_SHA256SUMS"
+# SHA256SUMS 输出文件名（cd 到 ASSET_DIR 后使用相对路径）
+SUMS_FILENAME="ghostcode_SHA256SUMS"
 
 # ============================================================
 # 检测平台并选择合适的 sha256 工具
@@ -53,7 +53,7 @@ echo "       目录：${ASSET_DIR}"
 cd "${ASSET_DIR}"
 
 # 清空并重新生成 SHA256SUMS
-> "${SUMS_FILE}"
+> "${SUMS_FILENAME}"
 
 # 对每个 .tar.gz 文件生成校验和并追加到文件
 bundle_count=0
@@ -62,7 +62,7 @@ for tarfile in ghostcode-*.tar.gz; do
     continue
   fi
 
-  ${SHA256_CMD} "${tarfile}" >> "${SUMS_FILE}"
+  ${SHA256_CMD} "${tarfile}" >> "${SUMS_FILENAME}"
   echo "[校验] ${tarfile}"
   ((bundle_count++))
 done
@@ -77,7 +77,7 @@ fi
 
 echo ""
 echo "[完成] 已为 ${bundle_count} 个 bundle 生成 SHA256 校验和"
-echo "       输出文件：${SUMS_FILE}"
+echo "       输出文件：${SUMS_FILENAME}"
 echo ""
 echo "校验和内容："
-cat "${SUMS_FILE}"
+cat "${SUMS_FILENAME}"
