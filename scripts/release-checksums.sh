@@ -64,7 +64,7 @@ for tarfile in ghostcode-*.tar.gz; do
 
   ${SHA256_CMD} "${tarfile}" >> "${SUMS_FILENAME}"
   echo "[校验] ${tarfile}"
-  ((bundle_count++))
+  bundle_count=$((bundle_count + 1))
 done
 
 # ============================================================
