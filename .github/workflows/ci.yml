@@ -19,7 +19,7 @@ on:
 
 env:
   # 固定 Rust toolchain 版本，与 Cargo.toml rust-version 一致
-  RUST_VERSION: "1.75"
+  RUST_VERSION: "1.85"
   # pnpm 版本
   PNPM_VERSION: "9"
 

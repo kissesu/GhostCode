@@ -22,7 +22,7 @@ on:
       - "v*"
 
 env:
-  RUST_VERSION: "1.75"
+  RUST_VERSION: "1.85"
   PNPM_VERSION: "9"
 
 jobs:
@@ -44,9 +44,9 @@ jobs:
             runner: macos-latest
             platform: darwin-arm64
 
-          # macOS Intel（GitHub 提供的 Intel runner 是 macos-13）
+          # macOS Intel（使用 macos-latest，GitHub 已弃用 macos-13）
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-latest
             platform: darwin-x64
 
           # Linux x64（原生构建）
