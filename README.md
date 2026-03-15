@@ -54,24 +54,23 @@
 
 ## 快速安装
 
-### 方式一：通过 pnpm 安装（推荐）
+### 方式一：Claude Code Plugin 安装（推荐）
 
 ```bash
-# 安装 GhostCode Plugin（postinstall 自动下载并安装 Daemon 二进制）
-pnpm add ghostcode
+# 1. 添加 GhostCode marketplace
+claude plugin marketplace add kissesu/GhostCode
 
-# 初始化项目（生成 .mcp.json，注册 MCP 工具）
-ghostcode init
+# 2. 安装 GhostCode Plugin
+claude plugin install gc@ghostcode
 
-# 验证安装是否正常
-ghostcode doctor
+# 3. 重启 Claude Code 使插件生效
 ```
 
 ### 方式二：从源码构建
 
 ```bash
 # 克隆仓库
-git clone <repository-url>
+git clone https://github.com/kissesu/GhostCode.git
 cd GhostCode
 
 # 构建 Rust 核心
@@ -80,6 +79,10 @@ cargo build --release
 # 安装 Plugin 依赖
 cd src/plugin
 pnpm install && pnpm build
+
+# 添加本地 marketplace 并安装
+claude plugin marketplace add /path/to/GhostCode
+claude plugin install gc@ghostcode
 ```
 
 详细步骤请参阅 [快速上手指南](docs/getting-started.md)。

@@ -1,18 +1,29 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "ghostcode",
+  "description": "GhostCode - 多 Agent 协作开发平台，融合 CCCC 通信内核 + ccg-workflow 代码安全策略 + oh-my-claudecode 用户体验",
   "owner": {
     "name": "Atlas.oi"
-  },
-  "metadata": {
-    "description": "GhostCode - 多 Agent 协作开发平台，融合 CCCC 通信内核 + ccg-workflow 代码安全策略 + oh-my-claudecode 用户体验",
-    "homepage": "https://github.com/kissesu/GhostCode"
   },
   "plugins": [
     {
       "name": "gc",
+      "description": "GhostCode Plugin - 多 Agent 协作、智能路由、Skill 驱动的开发体验增强",
       "version": "0.1.0",
+      "author": {
+        "name": "Atlas.oi"
+      },
       "source": "./src/plugin",
-      "description": "GhostCode Plugin - 多 Agent 协作、智能路由、Skill 驱动的开发体验增强"
+      "category": "productivity",
+      "homepage": "https://github.com/kissesu/GhostCode",
+      "tags": [
+        "multi-agent",
+        "collaboration",
+        "ghostcode",
+        "skill-learning",
+        "routing"
+      ]
     }
-  ]
+  ],
+  "version": "0.1.0"
 }
