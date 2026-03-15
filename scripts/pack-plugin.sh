@@ -389,7 +389,7 @@ echo "第五步：生成 package.json..."
 
 cat > "$OUTPUT_DIR/package.json" << EOF
 {
-  "name": "@bbyx0011/ghostcode",
+  "name": "@atlas-ghost/ghostcode",
   "version": "${VERSION}",
   "description": "GhostCode - 多 Agent 协作开发平台 Claude Code Plugin",
   "type": "module",

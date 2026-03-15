@@ -1,5 +1,5 @@
 {
-  "name": "@bbyx0011/ghostcode",
+  "name": "@atlas-ghost/ghostcode",
   "version": "0.1.0",
   "description": "GhostCode - 多 Agent 协作开发平台，Claude Code Plugin",
   "type": "module",
