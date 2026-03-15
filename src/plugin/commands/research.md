@@ -1,10 +1,10 @@
 ---
-name: team-research
-description: 多 Agent 并行研究：代码库探索 + 约束集提取 + 成功判据定义
+name: gc:research
+description: 多模型并行研究：代码库探索 + 约束集提取 + 成功判据定义（合并 spec-research + team-research）
 aliases:
-  - team research
-  - 团队研究
-do_not_use_when: 任务范围已明确、无需探索代码库、或已有现成约束集文档
+  - gc research
+  - 研究
+do_not_use_when: 任务范围已明确、约束集已存在
 ---
 
 ## Purpose
@@ -12,25 +12,30 @@ do_not_use_when: 任务范围已明确、无需探索代码库、或已有现成
 并行调度多个 Agent 对 GhostCode 代码库进行深度探索，产出约束集和可验证的成功判据。
 
 Research 阶段的产出不是信息堆砌，而是**约束集**。每条约束缩小解决方案空间，告诉后续
-的 team-plan 阶段「不要考虑这个方向」，使 plan 阶段能够产出零决策计划，Builder 能够
+的 plan 阶段「不要考虑这个方向」，使 plan 阶段能够产出零决策计划，Builder 能够
 无决策机械执行。
 
 GhostCode 技术栈特殊性：Rust 核心引擎（src/core/）+ TypeScript Plugin 薄壳
 （src/plugin/），两层之间通过 Unix socket / stdio JSON-RPC 通信，探索时需分别对待。
 
+> **注意**：此命令合并了 `spec-research` 和 `team-research`，统一输出路径到
+> `.claude/research/<任务名>-research.md`，不再区分 team-plan/ 和 spec-changes/。
+
 ## Use When
 
-- 用户输入 "team research"、"ccg:team-research"、"团队研究"
+- 用户输入 "gc research"、"gc:research"、"research"、"研究"
 - 需要对 GhostCode 代码库进行全面分析（Rust 核心 + TS Plugin 双层）
 - 需要提取硬约束和软约束
 - 需求描述存在歧义，无法直接规划
 - 启动一个新功能模块前需要了解现有架构约束
+- 需要对特定需求进行深度研究（新模块、重大变更）
 
 ## Do Not Use When
 
-- 任务范围已明确，约束集已存在（直接使用 team-plan）
+- 任务范围已明确，约束集已存在（直接使用 team-plan 或 spec-plan）
 - 仅修改单一文件的小型改动（过度杀鸡用牛刀）
-- 时间紧迫且风险可接受时（可跳过直接 team-plan）
+- 简单的 bug 修复或单文件改动（过度研究浪费时间）
+- 时间紧迫且风险可接受时（可跳过直接 plan）
 
 ## Guardrails
 
@@ -41,17 +46,35 @@ GhostCode 技术栈特殊性：Rust 核心引擎（src/core/）+ TypeScript Plug
 - 使用 AskUserQuestion 解决任何歧义，绝不假设
 - GhostCode 特定：Rust 核心变更必须与 TS Plugin 接口同步检查
 
+## GhostCode Daemon 集成（MANDATORY）
+
+执行任何步骤之前，必须先初始化 GhostCode MCP 工具：
+
+1. 调用 ToolSearch 搜索 "+ghostcode message" 加载 GhostCode MCP 工具
+2. 调用 ghostcode_group_info 确认 Daemon 在线且 Group 存在
+   - 如果失败：立即报错「GhostCode Daemon 未运行，请先启动 Daemon」，终止流程
+3. 后续步骤中使用以下 MCP 工具发送进度消息（Dashboard 实时可见）：
+   - ghostcode_message_send: 发送消息
+   - ghostcode_dashboard_snapshot: 获取当前状态快照
+
 ## Steps
 
 ### Step 0: MANDATORY Prompt 增强（立即执行，不可跳过）
 
+**立即执行，不可跳过。**
+
 分析 $ARGUMENTS 的意图、缺失信息、隐含假设，补全为结构化需求：
-- 明确目标：用户实际想要达成什么
-- 技术约束：GhostCode Rust core + TS plugin 的架构限制
-- 范围边界：哪些文件/模块在范围内
-- 验收标准：怎么算完成
+- **目标**：用户实际想要达成什么业务/技术目标
+- **技术约束**：GhostCode Rust core + TS Plugin 的架构限制
+- **范围边界**：哪些文件/模块在范围内，哪些明确排除
+- **验收标准**：怎么算完成，可观测的成功行为
 
 后续所有步骤使用增强后的需求。
+
+**MCP 调用**：Prompt 增强完成后发送消息：
+```
+ghostcode_message_send({ text: "gc:research 启动：<需求摘要>" })
+```
 
 ### Step 1: GhostCode 代码库评估
 
@@ -74,7 +97,7 @@ grep -r "JSON-RPC\|socket\|stdio" src/core/src/ --include="*.rs" -l
 - IPC 边界：什么走 Unix socket，什么走 stdio
 - 现有模式：错误处理、日志格式、测试风格
 
-### Step 2: 定义探索边界（按上下文划分）
+### Step 2: 定义探索边界（按上下文划分，非角色划分）
 
 识别自然的上下文边界（不是功能角色）：
 
@@ -84,7 +107,13 @@ grep -r "JSON-RPC\|socket\|stdio" src/core/src/ --include="*.rs" -l
 | 边界 B | src/plugin/src/ | TS Plugin 薄壳：hooks、router、skills |
 | 边界 C | IPC 协议层 | Unix socket 消息格式、JSON-RPC 结构 |
 
-每个边界应自包含，无需跨边界通信。
+每个边界应自包含，并行探索无需跨边界通信。
+
+### Step 2.5: 开启 Session Gate（MANDATORY，不可跳过）
+
+调用 ghostcode_session_gate_open(command_type="research", required_models=["codex", "gemini"])
+→ 得到 session_id，后续所有 submit/close 都使用此 session_id
+若 Daemon 离线 → 终止流程，报告错误「GhostCode Daemon 未运行」
 
 ### Step 3: 多模型并行探索（PARALLEL）
 
@@ -128,9 +157,42 @@ GEMINI_TASK
 
 等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
 
-**失败处理**：若 wrapper 退出码非 0（如 CLI 不可用退出码 127），log 错误并继续执行（用 Claude 自身分析替代），不终止整个流程。
+**wrapper 失败处理（按退出码分级）**：
+- exit 127（命令不存在）→ 终止流程，提示「ghostcode-wrapper 未安装，请检查环境」
+- exit 124（超时）→ 自动重试一次，仍失败则进入用户确认
+- 其他（如 429 额度用完）→ AskUserQuestion 让用户选择：
+    [重试] / [跳过并记录 bypass_reason] / [终止整个流程]
+  - 用户选「跳过」→ ghostcode_session_gate_submit(session_id, model,
+      output_type="bypass", data={}, bypass=true, bypass_reason="quota_exceeded")
+  - 用户选「终止」→ ghostcode_session_gate_abort(session_id) 后退出
+
+Codex wrapper 完成后，调用：
+```
+ghostcode_session_gate_submit(session_id=<session_id>,
+                               model="codex",
+                               output_type="research_analysis",
+                               data=<codex wrapper 输出>)
+```
+
+Gemini wrapper 完成后，调用：
+```
+ghostcode_session_gate_submit(session_id=<session_id>,
+                               model="gemini",
+                               output_type="research_analysis",
+                               data=<gemini wrapper 输出>)
+```
+
+**MCP 调用**：并行探索完成后发送消息：
+```
+ghostcode_message_send({ text: "并行探索完成，N 个 Agent 已汇报" })
+```
 
 ### Step 4: 聚合与综合
+
+调用 ghostcode_session_gate_close(session_id=<session_id>)
+→ 返回合并输出（含 partial 标记和 missing_models 列表）
+→ 若 SESSION_INCOMPLETE → 终止，必须补全 missing_models
+→ 若 partial=true → 报告顶部标注 WARNING PARTIAL_SESSION（有模型使用了 bypass）
 
 合并所有探索输出为统一约束集：
 
@@ -142,18 +204,21 @@ GEMINI_TASK
 ### Step 5: 歧义消解
 
 编译优先级排序的开放问题列表，使用 AskUserQuestion 系统性呈现：
-- 分组相关问题
-- 为每个问题提供上下文
-- 在适用时建议默认值
+- 分组相关问题，每次呈现不超过 3 个
+- 为每个问题提供上下文和建议默认值
+- 将用户回答转化为额外约束（HC-N 或 SC-N）
 
-将用户回答转化为额外约束。
+**MCP 调用**：歧义消解完成后发送消息：
+```
+ghostcode_message_send({ text: "歧义消解完成，开始生成约束集文档" })
+```
 
 ### Step 6: 写入研究文件
 
-路径：`.claude/team-plan/<任务名>-research.md`
+路径：`.claude/research/<任务名>-research.md`
 
 ```markdown
-# Team Research: <任务名>
+# Research: <任务名>
 
 ## 增强后的需求
 <结构化需求描述>
@@ -174,17 +239,23 @@ GEMINI_TASK
 - [RISK-1] <风险描述> — 缓解：<策略>
 
 ## 成功判据
-- [OK-1] <可验证的成功行为>
-- [OK-2] ...
+- [OK-1] cargo test 全通过（Rust 核心）
+- [OK-2] pnpm test 全通过（TS Plugin）
+- [OK-3] <业务可观测行为>
 
 ## 开放问题（已解决）
 - Q1: <问题> → A: <用户回答> → 约束：[HC/SC-N]
 ```
 
+**MCP 调用**：研究文件写入后发送消息：
+```
+ghostcode_message_send({ text: "约束集已生成：<文件路径>" })
+```
+
 ### Step 7: 上下文检查点
 
 报告当前上下文使用量。
-提示：`研究完成，运行 /clear 后执行 /team-plan <任务名> 开始规划`
+提示：`研究完成，运行 /clear 后执行 /gc-plan <任务名> 开始规划`
 
 ## Exit Criteria
 

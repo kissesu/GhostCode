@@ -35,6 +35,14 @@ pub mod skill_list;
 pub mod team_skill_list;
 pub mod verification_status;
 
+// ============================================================
+// Session Gate 工具模块（Phase 7）
+// ============================================================
+pub mod session_gate_open;
+pub mod session_gate_submit;
+pub mod session_gate_close;
+pub mod session_gate_abort;
+
 use anyhow::Result;
 use std::future::Future;
 use std::pin::Pin;
@@ -59,7 +67,23 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    /// 从环境变量构造 ToolContext
+    /// 从显式参数构造 ToolContext
+    ///
+    /// 由 serve_stdio 将 main.rs 检测到的 group_id / actor_id 直接注入，
+    /// 避免在多线程 tokio runtime 中调用 unsafe env::set_var 导致数据竞争（UB）
+    pub fn new(
+        daemon_addr: impl Into<std::path::PathBuf>,
+        group_id: &str,
+        actor_id: &str,
+    ) -> Self {
+        Self {
+            daemon_addr: daemon_addr.into(),
+            group_id: group_id.to_string(),
+            actor_id: actor_id.to_string(),
+        }
+    }
+
+    /// 从环境变量构造 ToolContext（兼容旧调用路径）
     ///
     /// 若环境变量缺失则使用空字符串（Daemon 会返回相应错误）
     pub fn from_env(daemon_addr: impl Into<std::path::PathBuf>) -> Self {
@@ -258,6 +282,33 @@ static REGISTRY: &[ToolDescriptor] = &[
         schema: team_skill_list::schema,
         execute: |args, ctx| Box::pin(team_skill_list::execute_owned(args, ctx)),
     },
+    // --------------------------------------------------------
+    // Session Gate 工具（Phase 7）
+    // --------------------------------------------------------
+    ToolDescriptor {
+        name: "ghostcode_session_gate_open",
+        description: "Open a new session gate for multi-model review enforcement.",
+        schema: session_gate_open::schema,
+        execute: |args, ctx| Box::pin(session_gate_open::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_session_gate_submit",
+        description: "Submit a model's output to an open session gate.",
+        schema: session_gate_submit::schema,
+        execute: |args, ctx| Box::pin(session_gate_submit::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_session_gate_close",
+        description: "Close a session gate and retrieve merged outputs.",
+        schema: session_gate_close::schema,
+        execute: |args, ctx| Box::pin(session_gate_close::execute_owned(args, ctx)),
+    },
+    ToolDescriptor {
+        name: "ghostcode_session_gate_abort",
+        description: "Abort a session gate, discarding all submitted outputs.",
+        schema: session_gate_abort::schema,
+        execute: |args, ctx| Box::pin(session_gate_abort::execute_owned(args, ctx)),
+    },
 ];
 
 // ============================================================
@@ -334,9 +385,9 @@ mod tests {
     // 测试 1: all_tool_schemas 返回 16 个工具定义
     // --------------------------------------------------------
     #[test]
-    fn all_schemas_returns_16_tools() {
+    fn all_schemas_returns_20_tools() {
         let schemas = all_tool_schemas();
-        assert_eq!(schemas.len(), 16, "必须恰好返回 16 个工具定义");
+        assert_eq!(schemas.len(), 20, "必须恰好返回 20 个工具定义");
 
         // 验证每个 schema 都包含 name / description / inputSchema 字段
         for schema in &schemas {

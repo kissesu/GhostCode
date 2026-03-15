@@ -25,3 +25,4 @@ pub mod skill_learning;
 pub mod dashboard;
 pub mod recovery;
 pub mod diagnostics;
+pub mod session_gate;

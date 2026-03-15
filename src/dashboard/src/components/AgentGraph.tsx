@@ -29,6 +29,77 @@ const STATUS_ORDER: Record<string, number> = {
 };
 
 /**
+ * 判断字符串是否为纯十六进制 ID（如 Claude Code 子 Agent 的会话 ID）
+ *
+ * @param id - 待检测的字符串
+ * @returns true 表示是 hex ID
+ */
+function isHexId(id: string): boolean {
+  return /^[0-9a-f]{10,}$/i.test(id);
+}
+
+/**
+ * 判断 Agent 是否为"幽灵 Agent"——缺少有意义元数据的已停止 Agent
+ *
+ * 业务逻辑说明：
+ * 当 SubagentStart Hook 未正确触发时，账本中只有 actor.stop 事件，
+ * 没有 actor.start 事件。这些 Agent 的 display_name 和 agent_type 完全缺失，
+ * 展示一堆 "Agent-xxxx subagent stopped" 只会让用户困惑，不如直接隐藏。
+ *
+ * 过滤规则（同时满足以下三条才判定为幽灵 Agent）：
+ * 1. 已停止（status !== 'active'）
+ * 2. 没有有意义的显示名称（display_name 缺失）
+ * 3. actor_id 是 hex ID（无法从中推断出任何业务含义）
+ *
+ * @param agent - Agent 状态视图
+ * @returns true 表示应隐藏
+ */
+function isGhostAgent(agent: AgentStatusView): boolean {
+  return agent.status !== 'active'
+    && !agent.display_name
+    && !agent.agent_type
+    && isHexId(agent.actor_id);
+}
+
+/**
+ * 生成 Agent 的友好显示名称
+ *
+ * 业务逻辑说明：
+ * 1. 优先使用 display_name（由 SubagentStart Hook 从 agent_type 生成）
+ * 2. 若 display_name 缺失且 actor_id 为 hex ID，截断显示为 "Agent-xxxx"
+ * 3. 否则直接显示 actor_id
+ *
+ * @param agent - Agent 状态视图
+ * @returns 友好的显示名称
+ */
+function getDisplayName(agent: AgentStatusView): string {
+  if (agent.display_name) return agent.display_name;
+  if (isHexId(agent.actor_id)) {
+    return `Agent-${agent.actor_id.slice(0, 6)}`;
+  }
+  return agent.actor_id;
+}
+
+/**
+ * 获取 Agent 类型标签的显示文本
+ *
+ * 业务逻辑说明：
+ * 1. 优先使用 agent_type（如 "feature-dev:code-reviewer"）
+ * 2. 若 runtime 不是 "custom"，使用 runtime（如 "claude"、"codex"）
+ * 3. 若 runtime 为 "custom" 且 actor_id 为 hex ID，显示 "subagent"
+ * 4. 否则显示 runtime 原始值
+ *
+ * @param agent - Agent 状态视图
+ * @returns 类型标签文本
+ */
+function getTypeLabel(agent: AgentStatusView): string {
+  if (agent.agent_type) return agent.agent_type;
+  if (agent.runtime !== 'custom') return agent.runtime;
+  if (isHexId(agent.actor_id)) return 'subagent';
+  return agent.runtime;
+}
+
+/**
  * 获取 Runtime 类型的显示颜色
  *
  * @param runtime - Runtime 类型字符串
@@ -73,10 +144,11 @@ function formatLastSeen(lastSeen: string | null): string {
  * 单个 Agent 状态卡片
  */
 function AgentCard({ agent }: { agent: AgentStatusView }) {
-  // 显示标签：优先 agent_type（如 "feature-dev:code-reviewer"），回退到 runtime
-  const displayLabel = agent.agent_type ?? agent.runtime;
-  // 颜色与显示标签对齐：有 agent_type 时基于 runtime 推断颜色（保持与后端一致），
-  // 无 agent_type 时直接用 runtime 颜色
+  // 友好显示名称：优先 display_name → hex ID 截断 → 原始 actor_id
+  const displayName = getDisplayName(agent);
+  // 类型标签：优先 agent_type → 有意义的 runtime → "subagent"
+  const typeLabel = getTypeLabel(agent);
+  // 颜色基于 runtime 推断（claude=紫、codex=蓝、gemini=绿），custom 用默认色
   const runtimeColor = getRuntimeColor(agent.runtime);
 
   return (
@@ -84,7 +156,7 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
       className="card p-3 flex flex-col gap-2"
       data-testid="agent-card"
     >
-      {/* 头部：状态指示 + 显示名称（优先 display_name，回退到 actor_id） */}
+      {/* 头部：状态指示 + 友好显示名称 */}
       <div className="flex items-center gap-2">
         <span className={`status-dot ${agent.status}`} data-testid="status-dot" />
         <span
@@ -92,11 +164,11 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
           style={{ color: 'var(--text-primary)' }}
           title={agent.actor_id}
         >
-          {agent.display_name || agent.actor_id}
+          {displayName}
         </span>
       </div>
 
-      {/* Runtime / Agent 类型标签 */}
+      {/* Runtime / Agent 类型标签 + 状态文字 */}
       <div className="flex items-center gap-2">
         <span
           className="text-xs px-1.5 py-0.5 rounded font-mono"
@@ -106,7 +178,7 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
             border: `1px solid ${runtimeColor}44`,
           }}
         >
-          {displayLabel}
+          {typeLabel}
         </span>
         <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
           {agent.status}
@@ -127,7 +199,14 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
  * @param agents - Agent 状态视图数组
  */
 export function AgentGraph({ agents }: AgentGraphProps) {
-  if (agents.length === 0) {
+  // ============================================
+  // 过滤幽灵 Agent：缺少元数据的已停止 hex ID Agent
+  // 这些 Agent 因 SubagentStart Hook 未触发而缺少 display_name/agent_type，
+  // 展示无意义的 "Agent-xxxx subagent stopped" 只会让用户困惑
+  // ============================================
+  const visibleAgents = agents.filter((a) => !isGhostAgent(a));
+
+  if (visibleAgents.length === 0) {
     return (
       <div
         className="flex items-center justify-center h-32 text-sm"
@@ -139,7 +218,7 @@ export function AgentGraph({ agents }: AgentGraphProps) {
   }
 
   // 排序规则：1) 状态优先（active > unknown > stopped）2) 同状态按最后活跃时间倒序
-  const sortedAgents = [...agents].sort((a, b) => {
+  const sortedAgents = [...visibleAgents].sort((a, b) => {
     const orderA = STATUS_ORDER[a.status] ?? 3;
     const orderB = STATUS_ORDER[b.status] ?? 3;
     if (orderA !== orderB) return orderA - orderB;
@@ -150,7 +229,9 @@ export function AgentGraph({ agents }: AgentGraphProps) {
     return tsB - tsA;
   });
 
-  const activeCount = agents.filter((a) => a.status === 'active').length;
+  const activeCount = visibleAgents.filter((a) => a.status === 'active').length;
+  // 被隐藏的幽灵 Agent 数量（仅当存在时显示提示）
+  const hiddenCount = agents.length - visibleAgents.length;
 
   return (
     <div className="flex flex-col gap-3" data-testid="agent-graph">
@@ -159,7 +240,12 @@ export function AgentGraph({ agents }: AgentGraphProps) {
         className="text-xs px-1"
         style={{ color: 'var(--text-muted)' }}
       >
-        {activeCount} / {agents.length} 个 Agent 在线
+        {activeCount} / {visibleAgents.length} 个 Agent 在线
+        {hiddenCount > 0 && (
+          <span title="缺少元数据的已停止 Agent（SubagentStart Hook 未触发）">
+            {` (+${hiddenCount} 已回收)`}
+          </span>
+        )}
       </div>
 
       {/* Agent 列表 */}

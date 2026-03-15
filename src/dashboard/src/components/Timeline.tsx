@@ -73,6 +73,87 @@ function getKindColor(kind: string): string {
 }
 
 /**
+ * 将原始 JSON 格式的 data_summary 解析为人类可读的摘要文本
+ *
+ * 业务逻辑说明：
+ * 后端 data_summary 是 serde_json::to_string(&event.data) 的原始 JSON 字符串，
+ * 前端需要根据事件类型（kind）提取关键字段，转换为用户友好的展示格式。
+ *
+ * 转换规则：
+ * - chat.message: 提取 text 字段，显示发送目标
+ * - actor.start: 显示 Agent 启动信息（display_name + agent_type）
+ * - actor.stop: 显示 Agent 停止信息
+ * - actor.add: 显示 Actor 注册信息
+ * - skill.*: 显示 Skill 相关信息
+ * - 其他/解析失败: 回退到截断的原始 JSON
+ *
+ * @param kind - 事件类型字符串（如 "chat.message"）
+ * @param rawSummary - 原始 data_summary 字符串（JSON 格式）
+ * @returns 人类可读的摘要文本
+ */
+function formatDataSummary(kind: string, rawSummary: string): string {
+  if (!rawSummary) return '';
+
+  try {
+    const data = JSON.parse(rawSummary) as Record<string, unknown>;
+
+    switch (kind) {
+      case 'chat.message': {
+        const text = data.text as string | undefined;
+        const to = data.to as string[] | undefined;
+        if (text) {
+          const target = to?.length ? ` -> ${to.join(', ')}` : '';
+          // 限制文本长度，避免超长消息撑开布局
+          const truncated = text.length > 120 ? text.slice(0, 120) + '...' : text;
+          return `${truncated}${target}`;
+        }
+        break;
+      }
+      case 'actor.start': {
+        const displayName = data.display_name as string | undefined;
+        const agentType = data.agent_type as string | undefined;
+        const actorId = data.actor_id as string | undefined;
+        const name = displayName || actorId || '未知';
+        return agentType ? `${name} (${agentType}) 启动` : `${name} 启动`;
+      }
+      case 'actor.stop': {
+        const actorId = data.actor_id as string | undefined;
+        return actorId ? `${actorId} 停止` : 'Agent 停止';
+      }
+      case 'actor.add': {
+        const displayName = data.display_name as string | undefined;
+        const actorId = data.actor_id as string | undefined;
+        const role = data.role as string | undefined;
+        return `注册 ${displayName || actorId || '未知'}${role ? ` (${role})` : ''}`;
+      }
+      case 'actor.remove': {
+        const actorId = data.actor_id as string | undefined;
+        return actorId ? `移除 ${actorId}` : 'Actor 移除';
+      }
+      case 'group.create': {
+        const title = data.title as string | undefined;
+        return title ? `创建 Group: ${title}` : 'Group 创建';
+      }
+      case 'skill.learned':
+      case 'skill.promoted':
+      case 'skill.rejected': {
+        const name = data.name as string | undefined;
+        const action = kind.split('.')[1];
+        return name ? `Skill ${action}: ${name}` : `Skill ${action}`;
+      }
+      default:
+        break;
+    }
+  } catch {
+    // JSON 解析失败，记录警告并回退到原始文本
+    console.warn('[Timeline] formatDataSummary JSON 解析失败:', rawSummary.slice(0, 100));
+  }
+
+  // 回退：截断原始 JSON 字符串展示
+  return rawSummary.length > 100 ? rawSummary.slice(0, 100) + '...' : rawSummary;
+}
+
+/**
  * 单条时间线事件条目
  */
 function TimelineItem({ item }: { item: LedgerTimelineItem }) {
@@ -114,14 +195,14 @@ function TimelineItem({ item }: { item: LedgerTimelineItem }) {
           </span>
         </div>
 
-        {/* 事件数据摘要 */}
+        {/* 事件数据摘要（格式化为人类可读文本） */}
         {item.data_summary && (
           <div
-            className="mt-1 text-xs font-mono truncate"
+            className="mt-1 text-xs truncate"
             style={{ color: 'var(--text-muted)' }}
             title={item.data_summary}
           >
-            {item.data_summary}
+            {formatDataSummary(item.kind, item.data_summary)}
           </div>
         )}
       </div>

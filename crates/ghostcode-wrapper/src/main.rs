@@ -168,7 +168,7 @@ async fn main() {
     };
 
     let config = TaskConfig {
-        workdir,
+        workdir: workdir.clone(),
         mode: TaskMode::New,
         session_id: None,
         model: cli.model.clone(),
@@ -188,12 +188,39 @@ async fn main() {
     // use_stdin=false: 文本追加到 args 末尾
     // ============================================
     let (final_args, stdin_data) = if use_stdin {
-        // 通过 stdin 传递：保持 args 不变
-        (args_vec, Some(task_text.clone()))
+        // 通过 stdin 传递：文本通过 stdin pipe 传入
+        let mut args = args_vec;
+        match &cli.backend {
+            BackendKind::Gemini => {
+                // Gemini CLI v0.33.1: stdin 输入不需要 -p 或 "-" 参数
+                // 直接通过 stdin pipe 传入即可，Gemini 会自动读取 stdin 作为 prompt
+                // 如果加了 -p "-"，会触发 "Cannot use both a positional prompt
+                // and the --prompt (-p) flag together" 错误
+            }
+            BackendKind::Codex | BackendKind::Claude => {
+                // Codex/Claude: 追加 "-" 作为 targetArg，告诉 CLI 从 stdin 读取输入
+                // 这是 Unix 标准约定，与 ccg-workflow 的 Go wrapper 行为一致
+                // 参考: ccg-workflow/codeagent-wrapper/executor.go:855-858
+                args.push("-".to_string());
+            }
+        }
+        (args, Some(task_text.clone()))
     } else {
         // 通过参数传递：将任务文本追加到 args 末尾
         let mut args = args_vec;
-        args.push(task_text.clone());
+        match &cli.backend {
+            BackendKind::Gemini => {
+                // Gemini: 需要 -p 标志 + 文本作为值
+                // 参考: ccg-workflow/codeagent-wrapper/backend.go:133
+                args.push("-p".to_string());
+                args.push(task_text.clone());
+            }
+            BackendKind::Codex | BackendKind::Claude => {
+                // Codex/Claude: text 作为最后一个位置参数
+                // 参考: ccg-workflow/codeagent-wrapper/executor.go:856
+                args.push(task_text.clone());
+            }
+        }
         (args, None)
     };
 
@@ -204,17 +231,65 @@ async fn main() {
     let cancel_token = CancellationToken::new();
     let timeout = Duration::from_secs(cli.timeout);
 
-    // 将 Vec<String> 转换为 Vec<&str> 以匹配 run_command_as 接口
+    // 将 Vec<String> 转换为 Vec<&str> 以匹配 run_command_as_in 接口
     let args_refs: Vec<&str> = final_args.iter().map(|s| s.as_str()).collect();
     let stdin_ref = stdin_data.as_deref();
 
-    let output = match ProcessManager::run_command_as(
+    // ============================================
+    // 工作目录传递策略（参考 ccg-workflow/codeagent-wrapper/executor.go:980-984）
+    // - Codex: 通过 -C 标志传入工作目录（已在 backend.rs 的 build_args 中处理），
+    //          此处不传 workdir 避免与 -C 冲突
+    // - Claude: 不支持 -C 标志，必须通过进程 cwd（cmd.current_dir）设置
+    // - Gemini: 使用系统临时目录作为进程 cwd，完全绕过 fdir 文件扫描
+    //
+    // Gemini 工作目录隔离策略：
+    //   Gemini CLI 启动时会用 fdir 库爬取 current_dir 下所有文件建立索引。
+    //   当项目包含大型构建产物（如 target/ 350K+ 文件）时，即使 .geminiignore
+    //   配置正确，文件路径 Map 的内存消耗仍会导致 OOM 或严重超时。
+    //   由于 ghostcode-wrapper 的所有任务上下文都通过 stdin/args 传递，
+    //   Gemini 不需要浏览项目文件。将 cwd 设为临时目录可完全消除扫描开销。
+    //   NODE_OPTIONS=8GB 保留作为安全网，防止临时目录意外膨胀。
+    // ============================================
+    //   安全修复（C1）：使用 tempfile::tempdir() 创建专属隔离目录，
+    //   避免共享 /tmp 导致跨任务数据泄露。TempDir 句柄持有到子进程结束后自动清理。
+    let gemini_sandbox = tempfile::tempdir().unwrap_or_else(|e| {
+        eprintln!("错误：创建 Gemini 沙箱临时目录失败: {}", e);
+        process::exit(1);
+    });
+    let process_workdir: Option<&std::path::Path> = match &cli.backend {
+        BackendKind::Codex => None,
+        BackendKind::Claude => Some(workdir.as_path()),
+        BackendKind::Gemini => Some(gemini_sandbox.path()),
+    };
+
+    // ============================================
+    // 后端专属环境变量构建
+    // Gemini CLI 是 Node.js 应用，在大型项目中扫描文件会消耗大量内存。
+    // 通过 NODE_OPTIONS 将堆内存上限从默认 4GB 提升到 8GB，
+    // 防止 Gemini CLI 因 fdir 文件爬取导致 OOM 崩溃。
+    //
+    // 根因分析：Gemini CLI 使用 fdir 库爬取 current_dir 下所有文件，
+    // 当项目包含大型构建产物目录（如 Rust 的 target/ 350K+ 文件）时，
+    // 文件路径 Map 的 Rehash 操作超出 Node.js 默认 4GB 堆上限。
+    // .geminiignore 因 macOS CJK 路径 NFC/NFD 规范化差异可能失效。
+    // ============================================
+    let gemini_envs: Vec<(&str, &str)> = vec![
+        ("NODE_OPTIONS", "--max-old-space-size=8192"),
+    ];
+    let process_envs: Option<&[(&str, &str)]> = match &cli.backend {
+        BackendKind::Gemini => Some(&gemini_envs),
+        BackendKind::Codex | BackendKind::Claude => None,
+    };
+
+    let output = match ProcessManager::run_command_as_in(
         backend_name,
         backend_command,
         &args_refs,
         stdin_ref,
         timeout,
         cancel_token,
+        process_workdir,
+        process_envs,
     )
     .await
     {

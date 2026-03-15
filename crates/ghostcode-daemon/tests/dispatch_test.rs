@@ -146,10 +146,15 @@ async fn stub_ops_return_not_implemented() {
                 && **op != "actor_add"
                 && **op != "actor_list"
                 && **op != "actor_remove"
+                // Phase 7 Session Gate ops（4 个，已实现门控存储层）
+                && **op != "session_gate_open"
+                && **op != "session_gate_submit"
+                && **op != "session_gate_close"
+                && **op != "session_gate_abort"
         })
         .collect();
 
-    // P9-T2 已实现 team_skill_list，所有 op 均不再是 stub
+    // Phase 7 已实现 Session Gate 四个 op，所有 op 均不再是 stub
     assert_eq!(stub_ops.len(), 0, "应有 0 个占位 op（所有 op 均已实现）");
 
     for op in stub_ops {

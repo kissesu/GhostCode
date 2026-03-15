@@ -54,8 +54,8 @@ describe('Timeline', () => {
     expect(screen.getByText('message_sent')).toBeInTheDocument();
     // 验证 by 字段
     expect(screen.getByText('actor-alice')).toBeInTheDocument();
-    // 验证 data_summary
-    expect(screen.getByText('{"content": "hello"}')).toBeInTheDocument();
+    // 验证 data_summary 被格式化显示（formatDataSummary 处理后的文本）
+    expect(screen.getByText(/content.*hello/)).toBeInTheDocument();
   });
 
   it('正确渲染多条事件', () => {

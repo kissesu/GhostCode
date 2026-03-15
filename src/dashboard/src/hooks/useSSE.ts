@@ -15,6 +15,59 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LedgerTimelineItem } from '../api/client';
 
+/**
+ * 将 SSE 推送的原始 Event JSON 转换为 LedgerTimelineItem 格式
+ *
+ * 业务逻辑说明：
+ * SSE 推送的是账本原始 Event 对象（含 data: JSON 对象），
+ * 而前端 LedgerTimelineItem 期望 data_summary: string（完整的 JSON 字符串）。
+ * 此函数对齐两者格式，确保 SSE 实时事件与 REST 快照事件在 Timeline 中显示一致。
+ *
+ * @param raw - SSE 解析后的原始 JSON 对象（Event 结构）
+ * @returns LedgerTimelineItem 格式对象
+ */
+/**
+ * 类型守卫：校验 SSE 原始数据是否包含 LedgerTimelineItem 必需字段
+ *
+ * W4 修复：替代 as string 类型断言，在运行时验证字段存在性和类型，
+ * 防止后端 Event 结构变化时前端静默产生错误数据。
+ *
+ * @param raw - SSE 解析后的原始 JSON 对象
+ * @returns true 表示包含全部必需字段且类型正确
+ */
+function isValidRawEvent(raw: Record<string, unknown>): raw is {
+  id: string; ts: string; kind: string; group_id: string; by: string; data?: unknown;
+} {
+  return typeof raw.id === 'string'
+    && typeof raw.ts === 'string'
+    && typeof raw.kind === 'string'
+    && typeof raw.group_id === 'string'
+    && typeof raw.by === 'string';
+}
+
+function rawEventToTimelineItem(raw: Record<string, unknown>): LedgerTimelineItem | null {
+  // W4 修复：使用类型守卫替代 as string 断言，结构不匹配时返回 null 跳过
+  if (!isValidRawEvent(raw)) {
+    console.warn('SSE 事件字段缺失或类型错误，跳过:', raw);
+    return null;
+  }
+
+  // data 字段：原始 Event 中为 JSON 对象，序列化为字符串，完整返回不截断
+  let dataSummary = '';
+  if (raw.data !== undefined && raw.data !== null) {
+    dataSummary = typeof raw.data === 'string' ? raw.data : JSON.stringify(raw.data);
+  }
+
+  return {
+    id: raw.id,
+    ts: raw.ts,
+    kind: raw.kind,
+    group_id: raw.group_id,
+    by: raw.by,
+    data_summary: dataSummary,
+  };
+}
+
 /** SSE Hook 返回值 */
 export interface UseSSEResult {
   /** 已接收的事件列表（按时间顺序追加） */
@@ -105,7 +158,12 @@ export function useSSE(groupId: string | null, baseUrl = ''): UseSSEResult {
         if (parsed.type === 'connected') {
           return;
         }
-        setEvents((prev) => [...prev, parsed as unknown as LedgerTimelineItem]);
+        // 将原始 Event 转换为 LedgerTimelineItem 格式
+        // SSE 推送的是 Event（含 data 对象），前端期望 LedgerTimelineItem（含 data_summary 字符串）
+        const item = rawEventToTimelineItem(parsed);
+        if (item) {
+          setEvents((prev) => [...prev, item]);
+        }
       } catch {
         // JSON 解析失败时记录警告但不中断流
         console.warn('SSE 消息解析失败:', event.data);

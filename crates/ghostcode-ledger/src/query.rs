@@ -26,7 +26,7 @@ use crate::{iter_events, Result};
 
 /// 将 Event 转换为 Dashboard 时间线条目
 ///
-/// data_summary 截断到最多 200 字符，防止大 payload 影响 API 响应体积
+/// 将事件转换为 Timeline 条目，data_summary 返回完整的事件负载 JSON
 fn event_to_timeline_item(event: &Event) -> LedgerTimelineItem {
     // 将 EventKind 序列化为字符串表示（如 "chat.message"）
     let kind_str = serde_json::to_string(&event.kind)
@@ -34,13 +34,8 @@ fn event_to_timeline_item(event: &Event) -> LedgerTimelineItem {
         .trim_matches('"')
         .to_string();
 
-    // 事件负载摘要，超过 200 字符截断并加省略号
-    let data_str = serde_json::to_string(&event.data).unwrap_or_default();
-    let data_summary = if data_str.len() > 200 {
-        format!("{}...", &data_str[..200])
-    } else {
-        data_str
-    };
+    // 完整事件负载，不截断——截断的信息没有意义
+    let data_summary = serde_json::to_string(&event.data).unwrap_or_default();
 
     LedgerTimelineItem {
         id: event.id.clone(),

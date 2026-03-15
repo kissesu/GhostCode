@@ -130,6 +130,8 @@ pub(crate) async fn call_daemon(
 /// - req: 已解析的 JSON-RPC 请求
 /// - state: 当前会话状态（initialize 时更新）
 /// - daemon_addr: Daemon Unix Socket 路径
+/// - group_id: GhostCode 工作组 ID（由 main.rs 检测并传入）
+/// - actor_id: Actor ID（由 main.rs 检测并传入）
 ///
 /// # 返回
 /// - Some(JsonRpcResponse): 需要写回 stdout 的响应
@@ -138,6 +140,8 @@ async fn handle_request(
     req: JsonRpcRequest,
     state: &mut SessionState,
     daemon_addr: &Path,
+    group_id: &str,
+    actor_id: &str,
 ) -> Option<JsonRpcResponse> {
     let id = req.id.clone();
     let method = req.method.as_str();
@@ -228,8 +232,8 @@ async fn handle_request(
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(Default::default()));
 
-            // 构造工具上下文（身份信息来自环境变量）
-            let ctx = crate::tools::ToolContext::from_env(daemon_addr);
+            // 构造工具上下文（身份信息由 main.rs 检测并通过参数传入，避免 env::set_var UB）
+            let ctx = crate::tools::ToolContext::new(daemon_addr, group_id, actor_id);
 
             // 分发到对应工具模块
             match crate::tools::dispatch_tool(&tool_name, &arguments, &ctx).await {
@@ -308,16 +312,16 @@ async fn handle_request(
 /// 5. 若有响应（非 Notification），序列化写入 stdout + "\n" + flush
 ///
 /// # 参数
-/// - _group_id: GhostCode 工作组 ID（目前通过环境变量传递，参数备用）
-/// - _actor_id: Actor ID（目前通过环境变量传递，参数备用）
+/// - group_id: GhostCode 工作组 ID（由 main.rs 检测，通过参数注入避免 env::set_var UB）
+/// - actor_id: Actor ID（由 main.rs 检测，通过参数注入避免 env::set_var UB）
 /// - daemon_addr: Daemon Unix Socket 路径
 ///
 /// # 返回
 /// - Ok(()): stdin EOF 正常退出
 /// - Err(anyhow::Error): 致命 IO 错误
 pub async fn serve_stdio(
-    _group_id: &str,
-    _actor_id: &str,
+    group_id: &str,
+    actor_id: &str,
     daemon_addr: &Path,
 ) -> Result<()> {
     let stdin = tokio::io::stdin();
@@ -341,8 +345,8 @@ pub async fn serve_stdio(
         // 解析 JSON-RPC 请求
         let resp = match serde_json::from_str::<JsonRpcRequest>(&line) {
             Ok(req) => {
-                // 分派到方法处理器
-                handle_request(req, &mut state, daemon_addr).await
+                // 分派到方法处理器（group_id/actor_id 由参数注入，避免环境变量 UB）
+                handle_request(req, &mut state, daemon_addr, group_id, actor_id).await
             }
             Err(_) => {
                 // 解析失败：返回 -32700 Parse error（id 无法确定，用 Null）
@@ -395,7 +399,7 @@ mod tests {
         let mut state = SessionState::default();
         // 使用不存在的路径（initialize 不访问 daemon）
         let daemon_addr = std::path::Path::new("/nonexistent/daemon.sock");
-        let resp = handle_request(req, &mut state, daemon_addr).await;
+        let resp = handle_request(req, &mut state, daemon_addr, "test-group", "test-actor").await;
 
         let resp = resp.expect("initialize 必须返回响应");
         assert_eq!(resp.jsonrpc, "2.0");
@@ -418,12 +422,12 @@ mod tests {
         let req = make_req("tools/list", serde_json::json!(2), serde_json::json!({}));
         let mut state = SessionState::default();
         let daemon_addr = std::path::Path::new("/nonexistent/daemon.sock");
-        let resp = handle_request(req, &mut state, daemon_addr).await;
+        let resp = handle_request(req, &mut state, daemon_addr, "test-group", "test-actor").await;
 
         let resp = resp.expect("tools/list 必须返回响应");
         let result = resp.result.expect("tools/list 必须有 result");
         let tools = result["tools"].as_array().expect("tools 必须是数组");
-        assert_eq!(tools.len(), 16, "工具数量必须恰好为 16");
+        assert_eq!(tools.len(), 20, "工具数量必须恰好为 20");
     }
 
     // --------------------------------------------------------
@@ -446,7 +450,7 @@ mod tests {
             let req = make_req(method, req_id.clone(), params.clone());
             let mut state = SessionState::default();
             let daemon_addr = std::path::Path::new("/nonexistent/daemon.sock");
-            let resp = handle_request(req, &mut state, daemon_addr).await;
+            let resp = handle_request(req, &mut state, daemon_addr, "test-group", "test-actor").await;
 
             let resp = resp.expect(&format!("{} 必须返回响应", method));
             assert_eq!(resp.jsonrpc, "2.0", "{}: jsonrpc 字段必须为 '2.0'", method);
@@ -463,7 +467,7 @@ mod tests {
         let req = make_req("foo/bar", serde_json::json!(99), serde_json::json!({}));
         let mut state = SessionState::default();
         let daemon_addr = std::path::Path::new("/nonexistent/daemon.sock");
-        let resp = handle_request(req, &mut state, daemon_addr).await;
+        let resp = handle_request(req, &mut state, daemon_addr, "test-group", "test-actor").await;
 
         let resp = resp.expect("未知方法也必须返回响应");
         assert_eq!(resp.jsonrpc, "2.0");
@@ -486,7 +490,7 @@ mod tests {
         );
         let mut state = SessionState::default();
         let daemon_addr = std::path::Path::new("/nonexistent/daemon.sock");
-        let resp = handle_request(req, &mut state, daemon_addr).await;
+        let resp = handle_request(req, &mut state, daemon_addr, "test-group", "test-actor").await;
         assert!(resp.is_none(), "Notification 不应返回响应");
     }
 }

@@ -308,18 +308,51 @@ impl StreamParser {
 
     /// 解析 Gemini 后端事件
     ///
-    /// Gemini 事件类型映射：
-    /// - delta=true → Progress
-    /// - status=success → Complete
+    /// Gemini stream-json 事件类型映射：
+    /// - role=assistant → AgentMessage（无论是否 delta，assistant 响应都是最终结果）
+    /// - role=user → 跳过（用户输入回显，不需要收集）
     /// - type=init → Init（锁定 session_id）
-    /// - role=assistant（无 delta）→ AgentMessage
+    /// - status=success → Complete
+    /// - delta=true（非 role 事件）→ Progress
+    ///
+    /// 重要：role 检查必须在 delta 检查之前！
+    /// Gemini CLI v0.33.1 的 assistant 消息带有 delta:true 标记，
+    /// 如果先检查 delta 会把 assistant 响应错误归类为 Progress，
+    /// 同时 user 消息（无 delta）会被末尾的 role 检查捕获为 AgentMessage，
+    /// 导致 wrapper 输出用户 prompt 而非 AI 响应。
     fn parse_gemini_event(&mut self, event: &RawEvent, raw: Value) -> Option<StreamEvent> {
-        // delta 增量流式输出 → Progress
-        if event.delta == Some(true) {
+        // ============================================
+        // 第一优先级：role=assistant → AgentMessage
+        // assistant 的流式响应带 delta:true，但仍然是最终结果
+        // 必须在 delta 检查之前命中，否则会被错误归类为 Progress
+        // ============================================
+        if event.role.as_deref() == Some("assistant") {
             return Some(StreamEvent {
-                kind: StreamEventKind::Progress,
+                kind: StreamEventKind::AgentMessage,
                 content: event.content.clone(),
                 session_id: self.locked_session_id.clone(),
+                raw,
+            });
+        }
+
+        // ============================================
+        // 第二优先级：role=user → 跳过
+        // Gemini stream-json 会回显用户输入，这不是 AI 响应
+        // 之前此消息被末尾的 role.is_some() 捕获为 AgentMessage，导致返回 prompt
+        // ============================================
+        if event.role.as_deref() == Some("user") {
+            return None;
+        }
+
+        // type=init → Init（锁定 session_id）
+        if event.event_type.as_deref() == Some("init") {
+            if let Some(ref sid) = event.session_id {
+                self.try_lock_session_id(sid);
+            }
+            return Some(StreamEvent {
+                kind: StreamEventKind::Init,
+                content: None,
+                session_id: event.session_id.clone(),
                 raw,
             });
         }
@@ -346,23 +379,10 @@ impl StreamParser {
             }
         }
 
-        // type=init → Init
-        if event.event_type.as_deref() == Some("init") {
-            if let Some(ref sid) = event.session_id {
-                self.try_lock_session_id(sid);
-            }
+        // delta 增量流式输出（非 role 事件）→ Progress
+        if event.delta == Some(true) {
             return Some(StreamEvent {
-                kind: StreamEventKind::Init,
-                content: None,
-                session_id: event.session_id.clone(),
-                raw,
-            });
-        }
-
-        // role 存在（无 delta）→ AgentMessage
-        if event.role.is_some() {
-            return Some(StreamEvent {
-                kind: StreamEventKind::AgentMessage,
+                kind: StreamEventKind::Progress,
                 content: event.content.clone(),
                 session_id: self.locked_session_id.clone(),
                 raw,

@@ -54,12 +54,33 @@ fn parse_claude_result() {
 // ============================================================
 
 #[test]
-fn parse_gemini_content_delta() {
-    // Gemini delta 流式增量事件应解析为 Progress 类型
+fn parse_gemini_assistant_delta() {
+    // 修复后：role=assistant 的事件无论是否带 delta=true，都应归类为 AgentMessage
+    // 这是 Gemini CLI v0.33.1 的实际行为：assistant 响应带 delta:true 标记，
+    // 但仍然是最终 AI 响应内容，不是中间进度事件
     let line = r#"{"role":"assistant","content":"hello","delta":true}"#;
     let mut parser = StreamParser::new();
     let event = parser.parse_line(line).unwrap().unwrap();
+    assert!(matches!(event.kind, StreamEventKind::AgentMessage));
+    assert_eq!(event.content, Some("hello".to_string()));
+}
+
+#[test]
+fn parse_gemini_pure_delta_progress() {
+    // 纯 delta 事件（无 role）仍应解析为 Progress 类型
+    let line = r#"{"content":"processing...","delta":true}"#;
+    let mut parser = StreamParser::new();
+    let event = parser.parse_line(line).unwrap().unwrap();
     assert!(matches!(event.kind, StreamEventKind::Progress));
+}
+
+#[test]
+fn parse_gemini_user_role_skipped() {
+    // role=user 事件应被跳过（返回 None），避免用户输入回显被误认为 AI 响应
+    let line = r#"{"role":"user","content":"1+1等于几？"}"#;
+    let mut parser = StreamParser::new();
+    let result = parser.parse_line(line).unwrap();
+    assert!(result.is_none());
 }
 
 #[test]

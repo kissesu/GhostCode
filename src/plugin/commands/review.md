@@ -1,4 +1,8 @@
 ---
+name: gc:review
+aliases:
+  - gc review
+  - 审查
 description: '双模型交叉审查：并行审查代码变更，分级处理 Critical/Warning/Info'
 ---
 
@@ -76,21 +80,112 @@ git diff HEAD
 如果有对应的计划文件，读取约束集和成功判据作为审查基准（OK-N 判据）。
 列出所有被修改的文件，分类：Rust 文件 / TS 文件 / 其他。
 
+### Step 1.5: 开启 Session Gate（MANDATORY，不可跳过）
+
+调用 ghostcode_session_gate_open(command_type="review", required_models=["codex", "gemini"])
+→ 得到 session_id，后续所有 submit/close 都使用此 session_id
+若 Daemon 离线 → 终止流程，报告错误「GhostCode Daemon 未运行」
+
 ### Step 2: 多模型并行审查（PARALLEL）
 
-**CRITICAL**: 必须在一条消息中同时发起两个后台 Bash 调用。
+**CRITICAL**: 必须在一条消息中同时发起两个 Bash 后台调用，run_in_background: true。
 
-Agent 1（Claude/Codex 路由 - 后端/Rust 审查）：
-- 审查维度：logic、security、memory-safety、concurrency、error-handling
-- Rust 特定：所有权正确性、unsafe 块安全性、异步任务取消安全
-- 输出 JSON：{ findings: [{severity, dimension, file, line, description, fix_suggestion}] }
+**Bash 调用 1（Codex 后端/Rust 审查）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_REVIEW'
+ROLE_FILE: ~/.ghostcode/prompts/codex-reviewer.md
 
-Agent 2（Gemini 路由 - 前端/TS Plugin 审查）：
-- 审查维度：patterns、maintainability、type-safety、ipc-compliance、hook-lifecycle
-- TS 特定：类型推断正确性、hook 调用顺序、IPC 消息格式合规
-- 输出 JSON：{ findings: [{severity, dimension, file, line, description, fix_suggestion}] }
+你正在对 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的代码变更进行后端审查。
 
-等待两个 Agent 完成（timeout: 600000ms）。
+请重点审查 Rust 核心代码（src/core/src/ 相关文件），维度包括：
+1. 逻辑正确性：业务逻辑错误、边界条件处理、数据流正确性
+2. 并发安全性：竞态条件、死锁风险、tokio 任务取消安全
+3. 内存安全性：所有权规则遵守、unsafe 块使用合规性、生命周期正确性
+4. 错误处理：错误传播完整性、panic 使用场景、Result 处理覆盖率
+
+输出 JSON findings：
+{
+  "findings": [
+    {
+      "severity": "Critical|Warning|Info",
+      "dimension": "logic|security|memory-safety|concurrency|error-handling",
+      "file": "文件路径",
+      "line": 行号,
+      "description": "问题描述",
+      "fix_suggestion": "修复建议"
+    }
+  ]
+}
+CODEX_REVIEW
+```
+
+**Bash 调用 2（Gemini 前端/TS Plugin 审查）**：
+```bash
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_REVIEW'
+ROLE_FILE: ~/.ghostcode/prompts/gemini-reviewer.md
+
+你正在对 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的代码变更进行前端审查。
+
+请重点审查 TS Plugin 代码（src/plugin/src/ 相关文件），维度包括：
+1. 可维护性：代码可读性、函数复杂度、命名规范、注释质量
+2. React 最佳实践：组件设计、状态管理、副作用处理、性能优化
+3. 类型安全：类型推断正确性、类型断言使用、any 类型滥用
+4. IPC 协议合规：消息格式是否符合 Rust 核心约定、错误码处理、版本兼容性
+5. hook 生命周期：hook 调用顺序正确性、副作用清理、依赖数组完整性
+
+输出 JSON findings：
+{
+  "findings": [
+    {
+      "severity": "Critical|Warning|Info",
+      "dimension": "patterns|maintainability|type-safety|ipc-compliance|hook-lifecycle",
+      "file": "文件路径",
+      "line": 行号,
+      "description": "问题描述",
+      "fix_suggestion": "修复建议"
+    }
+  ]
+}
+GEMINI_REVIEW
+```
+
+等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
+
+**wrapper 失败处理（按退出码分级）**：
+- exit 127（命令不存在）→ 终止流程，提示「ghostcode-wrapper 未安装，请检查环境」
+- exit 124（超时）→ 自动重试一次，仍失败则进入用户确认
+- 其他（如 429 额度用完）→ AskUserQuestion 让用户选择：
+    [重试] / [跳过并记录 bypass_reason] / [终止整个流程]
+  - 用户选「跳过」→ ghostcode_session_gate_submit(session_id, model,
+      output_type="bypass", data={}, bypass=true, bypass_reason="quota_exceeded")
+  - 用户选「终止」→ ghostcode_session_gate_abort(session_id) 后退出
+
+**submit 与自动关闭机制**：
+每次 wrapper 完成（或 bypass），调用 ghostcode_session_gate_submit。
+submit 会**自动检测**所有 required_models 是否都已提交：
+- 返回 `auto_closed=false` → session 保持打开，等待其他模型
+- 返回 `auto_closed=true` → session 已自动关闭，响应中包含 CombinedOutput
+  （含 partial、missing_models、submissions 字段）
+
+**无需手动调用 ghostcode_session_gate_close**。
+
+Codex wrapper 完成后，调用：
+```
+ghostcode_session_gate_submit(session_id=<session_id>,
+                               model="codex",
+                               output_type="review_findings",
+                               data=<codex wrapper 输出>)
+→ 检查响应中的 auto_closed 字段
+```
+
+Gemini wrapper 完成后，调用：
+```
+ghostcode_session_gate_submit(session_id=<session_id>,
+                               model="gemini",
+                               output_type="review_findings",
+                               data=<gemini wrapper 输出>)
+→ 检查响应中的 auto_closed 字段
+```
 
 **MCP 调用**：双模型审查完成后发送消息：
 ```
@@ -98,6 +193,14 @@ ghostcode_message_send({ text: "双模型审查完成，开始综合发现" })
 ```
 
 ### Step 3: 综合发现
+
+当最后一个 submit 返回 `auto_closed=true` 时，从响应中提取 CombinedOutput：
+- 若 `partial=true` → 报告顶部标注 WARNING PARTIAL_SESSION（有模型使用了 bypass）
+- 从 `submissions` 字段中提取各模型的审查结果
+
+（注意：不再需要手动调用 ghostcode_session_gate_close，submit 已自动处理。
+如果两个模型都通过 bypass 方式提交，第二次 bypass submit 会自动关闭 session。
+abort 仅在用户选择"终止整个流程"时使用。）
 
 合并两个模型的发现，去重重叠问题。
 

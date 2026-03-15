@@ -1,5 +1,5 @@
 ---
-name: team-review
+name: review
 description: 双模型交叉审查：并行审查代码变更，分级处理 Critical/Warning/Info
 aliases:
   - team review
@@ -64,6 +64,12 @@ git diff HEAD
 
 如果有对应的计划文件，读取约束集和成功判据作为审查基准（OK-N 判据）。
 列出所有被修改的文件，分类：Rust 文件 / TS 文件 / 其他。
+
+### Step 1.5: 开启 Session Gate（MANDATORY，不可跳过）
+
+调用 ghostcode_session_gate_open(command_type="review", required_models=["codex", "gemini"])
+→ 得到 session_id，后续所有 submit/close 都使用此 session_id
+若 Daemon 离线 → 终止流程，报告错误「GhostCode Daemon 未运行」
 
 ### Step 2: 多模型并行审查（PARALLEL）
 
@@ -130,9 +136,37 @@ GEMINI_REVIEW
 
 等待两个后台任务完成：使用 TaskOutput(block: true, timeout: 600000) 读取各自结果。
 
-**失败处理**：若 wrapper 退出码非 0（如 CLI 不可用退出码 127），log 错误并继续执行（用 Claude 自身审查替代），不终止整个流程。
+**wrapper 失败处理（按退出码分级）**：
+- exit 127（命令不存在）→ 终止流程，提示「ghostcode-wrapper 未安装，请检查环境」
+- exit 124（超时）→ 自动重试一次，仍失败则进入用户确认
+- 其他（如 429 额度用完）→ AskUserQuestion 让用户选择：
+    [重试] / [跳过并记录 bypass_reason] / [终止整个流程]
+  - 用户选「跳过」→ ghostcode_session_gate_submit(session_id, model,
+      output_type="bypass", data={}, bypass=true, bypass_reason="quota_exceeded")
+  - 用户选「终止」→ ghostcode_session_gate_abort(session_id) 后退出
+
+Codex wrapper 完成后，调用：
+```
+ghostcode_session_gate_submit(session_id=<session_id>,
+                               model="codex",
+                               output_type="review_findings",
+                               data=<codex wrapper 输出>)
+```
+
+Gemini wrapper 完成后，调用：
+```
+ghostcode_session_gate_submit(session_id=<session_id>,
+                               model="gemini",
+                               output_type="review_findings",
+                               data=<gemini wrapper 输出>)
+```
 
 ### Step 3: 综合发现
+
+调用 ghostcode_session_gate_close(session_id=<session_id>)
+→ 返回合并输出（含 partial 标记和 missing_models 列表）
+→ 若 SESSION_INCOMPLETE → 终止，必须补全 missing_models
+→ 若 partial=true → 报告顶部标注 WARNING PARTIAL_SESSION（有模型使用了 bypass）
 
 合并两个模型的发现，去重重叠问题。
 

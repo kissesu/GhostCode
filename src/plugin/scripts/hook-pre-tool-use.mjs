@@ -53,7 +53,7 @@ function readState() {
   } catch {
     // 状态文件解析失败时，返回默认状态重新初始化
   }
-  return { daemonStarted: false, socketPath: null, leaseId: null };
+  return { daemonStarted: false, socketPath: null, leaseId: null, webStarted: false };
 }
 
 /**
@@ -117,22 +117,40 @@ async function main() {
   if (state.daemonStarted && state.socketPath) {
     // 读取 addr.json 获取 Daemon 进程信息
     const addrPath = join(GHOSTCODE_HOME, "daemon", "ghostcoded.addr.json");
+    let daemonAlive = false;
     try {
       if (existsSync(addrPath)) {
         const addr = JSON.parse(readFileSync(addrPath, "utf-8"));
         if (addr.pid && isProcessAlive(addr.pid)) {
-          // Daemon 仍在运行，本次 Hook 无需任何操作，直接返回
-          return;
+          daemonAlive = true;
         }
       }
     } catch {
       // addr.json 读取失败，说明 Daemon 状态异常，需要重新启动
     }
 
+    if (daemonAlive) {
+      // Daemon 仍在运行，但仍需确保 Web Dashboard 也在运行
+      // Bug 修复：之前直接 return 导致 ensureWeb 永远不会被调用
+      if (!state.webStarted) {
+        try {
+          const { ensureWeb } = await import(join(PLUGIN_ROOT, "dist", "web.js"));
+          await ensureWeb();
+          state.webStarted = true;
+          writeState(state);
+        } catch (err) {
+          // Dashboard 启动失败不阻断工具调用
+          console.error("[GhostCode] Dashboard 自动启动失败:", err);
+        }
+      }
+      return;
+    }
+
     // Daemon 进程不再存活，重置状态准备重新启动
     state.daemonStarted = false;
     state.socketPath = null;
     state.leaseId = null;
+    state.webStarted = false;
   }
 
   // ============================================
@@ -167,7 +185,22 @@ async function main() {
     }
 
     // ============================================
-    // 第五步：将最新状态写回文件
+    // 第五步：启动 Dashboard Web 服务（单实例保证）
+    // ensureWeb() 内部检查 ghostcode-web 是否已运行，
+    // 已运行则跳过，未运行则自动启动并等待健康检查通过
+    // ============================================
+    try {
+      const { ensureWeb } = await import(join(PLUGIN_ROOT, "dist", "web.js"));
+      await ensureWeb();
+      state.webStarted = true;
+    } catch (err) {
+      // Dashboard 启动失败不阻断工具调用
+      // 用户仍可通过 /gc-web 命令手动启动
+      console.error("[GhostCode] Dashboard 自动启动失败:", err);
+    }
+
+    // ============================================
+    // 第六步：将最新状态写回文件
     // 下次 Hook 调用时可从此文件读取状态，实现跨进程幂等性
     // ============================================
     writeState(state);
@@ -177,7 +210,7 @@ async function main() {
     console.error("[GhostCode] Daemon 启动失败，工具调用将继续但无协作功能:", err);
 
     // 重置状态文件，下次 Hook 调用时会重试启动
-    writeState({ daemonStarted: false, socketPath: null, leaseId: null });
+    writeState({ daemonStarted: false, socketPath: null, leaseId: null, webStarted: false });
   }
 }
 

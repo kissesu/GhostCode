@@ -1,0 +1,24 @@
+# Rust 构建产物（22GB / 350K+ 文件，Gemini CLI 目录遍历会 OOM）
+/target/
+
+# Node.js 依赖（7K+ 文件）
+node_modules/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+
+# OS 元数据
+.DS_Store
+Thumbs.db
+
+# AI 工具缓存和状态文件（避免递归扫描）
+.claude/
+.serena/
+.ghostcode/
+openspec/
+.openspec/
+
+# 构建产物
+dist/
+*.js.map

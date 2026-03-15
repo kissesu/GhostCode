@@ -27,6 +27,9 @@ Thumbs.db
 *.so
 *.dylib
 
+# GhostCode 运行时状态目录
+.ghostcode/
+
 # AI 相关文件及目录
 .claude/
 openspec/

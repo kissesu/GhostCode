@@ -145,6 +145,42 @@ impl ProcessManager {
         timeout: Duration,
         cancel: CancellationToken,
     ) -> Result<ProcessOutput, ProcessError> {
+        Self::run_command_as_in(backend_name, command, args, stdin_data, timeout, cancel, None, None).await
+    }
+
+    /// 执行命令并等待结果（带工作目录、环境变量和主权约束的完整接口）
+    ///
+    /// 业务逻辑：
+    /// 0. 执行期主权约束检查（enforce_execution）
+    /// 1. 启动子进程，设置工作目录和环境变量
+    /// 2. 如果提供了 stdin_data，通过 stdin pipe 写入后关闭
+    /// 3. 在 tokio::select! 中同时等待：进程完成 / 超时 / 取消令牌
+    /// 4. 退出码非零时返回 ProcessFailed 错误
+    ///
+    /// 参考: ccg-workflow/codeagent-wrapper/executor.go:972-978
+    ///       Go 版本通过 loadMinimalEnvSettings() + cmd.SetEnv() 注入环境变量
+    ///       Rust 版本通过 envs 参数注入后端专属环境变量（如 Gemini 的 NODE_OPTIONS）
+    ///
+    /// @param backend_name - 后端名称（用于主权约束检查）
+    /// @param command - 可执行文件名称
+    /// @param args - 命令行参数列表
+    /// @param stdin_data - 可选的 stdin 数据
+    /// @param timeout - 超时时间
+    /// @param cancel - 取消令牌
+    /// @param workdir - 可选的工作目录（Claude/Gemini 使用，Codex 跳过）
+    /// @param envs - 可选的环境变量列表，追加到子进程环境中（不清除已有环境）
+    /// @returns Ok(ProcessOutput) - 成功执行的结果
+    /// @returns Err(ProcessError) - 主权违规/超时/取消/失败/IO 错误
+    pub async fn run_command_as_in(
+        backend_name: &str,
+        command: &str,
+        args: &[&str],
+        stdin_data: Option<&str>,
+        timeout: Duration,
+        cancel: CancellationToken,
+        workdir: Option<&std::path::Path>,
+        envs: Option<&[(&str, &str)]>,
+    ) -> Result<ProcessOutput, ProcessError> {
         let start = std::time::Instant::now();
 
         // ============================================
@@ -163,6 +199,26 @@ impl ProcessManager {
         // ============================================
         let mut cmd = Command::new(command);
         cmd.args(args);
+
+        // ============================================
+        // 工作目录设置（参考 ccg-workflow/codeagent-wrapper/executor.go:980-984）
+        // Claude/Gemini 不支持 -C 标志，必须通过进程 cwd 设置工作目录
+        // Codex 通过 -C 标志传入工作目录，调用方不传 workdir 来跳过此处设置
+        // ============================================
+        if let Some(dir) = workdir {
+            cmd.current_dir(dir);
+        }
+
+        // ============================================
+        // 环境变量注入（参考 ccg-workflow/codeagent-wrapper/executor.go:972-978）
+        // 后端专属环境变量追加到子进程环境中，不清除已有环境变量。
+        // 典型用例：Gemini 后端需要 NODE_OPTIONS=--max-old-space-size=8192
+        //          防止 Gemini CLI 在大型项目中因文件扫描导致 OOM 崩溃。
+        // ============================================
+        if let Some(env_pairs) = envs {
+            cmd.envs(env_pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        }
+
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
@@ -175,24 +231,35 @@ impl ProcessManager {
         let mut child = cmd.spawn()?;
 
         // ============================================
-        // 第二步：如果有 stdin_data，写入后关闭 stdin
-        // 必须在等待进程之前关闭，否则子进程会一直等待 EOF
-        // ============================================
-        if let Some(data) = stdin_data {
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(data.as_bytes()).await?;
-                // drop 会自动关闭 stdin，发送 EOF 给子进程
-            }
-        }
-
-        // ============================================
-        // 第三步：并发读取 stdout 并等待进程结束
-        // 使用 select! 同时监控超时和取消令牌
+        // 第二步：并发启动 stdin 写入 + stdout/stderr 读取
+        //
+        // 关键修复：stdin 写入必须与 stdout/stderr 读取并发执行，
+        // 否则大数据量时会产生管道死锁（经典 pipe deadlock）：
+        //   1. Rust 写 stdin → OS 管道缓冲区满（通常 64KB）
+        //   2. 子进程处理后写 stdout → stdout 管道缓冲区满（无人读取）
+        //   3. 子进程阻塞在 stdout 写入 → 无法继续读 stdin
+        //   4. Rust 阻塞在 stdin 写入 → 死锁
+        //
+        // 参考: ccg-workflow/codeagent-wrapper/executor.go:1089-1094
+        //       Go 版本使用 goroutine 并发写 stdin，避免此问题
         // ============================================
         let stdout = child.stdout.take().expect("stdout 管道应该存在");
         let stderr = child.stderr.take().expect("stderr 管道应该存在");
 
-        // 异步读取 stdout 的所有行
+        // stdin 写入任务：并发执行，写完后自动关闭（drop 发送 EOF）
+        if let Some(data) = stdin_data {
+            if let Some(mut stdin) = child.stdin.take() {
+                let data_owned = data.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = stdin.write_all(data_owned.as_bytes()).await {
+                        tracing::warn!("stdin 写入失败: {}", e);
+                    }
+                    // drop stdin 自动关闭管道，发送 EOF 给子进程
+                });
+            }
+        }
+
+        // 异步读取 stdout 的所有行（与 stdin 写入并发执行）
         let stdout_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             let mut lines = Vec::new();
@@ -202,7 +269,7 @@ impl ProcessManager {
             lines
         });
 
-        // 异步读取 stderr 的全部内容
+        // 异步读取 stderr 的全部内容（与 stdin 写入并发执行）
         let stderr_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             let mut content = String::new();

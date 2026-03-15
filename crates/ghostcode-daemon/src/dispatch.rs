@@ -78,6 +78,11 @@ pub const KNOWN_OPS: &[&str] = &[
     "skill_promote",
     "skill_learn_fragment",
     "team_skill_list",
+    // Session Gate（Phase 7）
+    "session_gate_open",
+    "session_gate_submit",
+    "session_gate_close",
+    "session_gate_abort",
 ];
 
 /// 分发请求到对应处理器
@@ -150,6 +155,12 @@ pub async fn dispatch(state: &AppState, req: DaemonRequest) -> DaemonResponse {
         "skill_learn_fragment" => handle_skill_learn_fragment(state, &req.args),
         // P9-T2：team_skill_list 正式实现，聚合所有 group 的候选技能
         "team_skill_list" => handle_team_skill_list(state, &req.args),
+
+        // === Session Gate（Phase 7）===
+        "session_gate_open" => handle_session_gate_open(state, &req.args),
+        "session_gate_submit" => handle_session_gate_submit(state, &req.args),
+        "session_gate_close" => handle_session_gate_close(state, &req.args),
+        "session_gate_abort" => handle_session_gate_abort(state, &req.args),
 
         // === 未知 op ===
         _ => DaemonResponse::err("UNKNOWN_OP", format!("unknown operation: {}", req.op)),
@@ -2044,3 +2055,193 @@ fn parse_runtime_kind(s: &str) -> ghostcode_types::actor::RuntimeKind {
     }
 }
 // ============================================
+
+// ============================================
+// Session Gate handler 实现（Phase 7）
+// ============================================
+
+/// session_gate_open handler
+///
+/// 创建新的 Session Gate，要求指定命令类型和所需模型列表。
+///
+/// 参数（args）：
+/// - command_type: String — "research"|"plan"|"execute"|"review"
+/// - required_models: Vec<String> — ["codex", "gemini"]
+///
+/// 返回：{ "session_id": "uuid-string" }
+fn handle_session_gate_open(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // 提取 command_type 参数
+    let command_type = match args["command_type"].as_str() {
+        Some(ct) => ct,
+        None => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: command_type"),
+    };
+
+    // 提取 required_models 参数（W2 修复：严格校验每项必须为非空字符串）
+    let required_models: Vec<&str> = match args["required_models"].as_array() {
+        Some(arr) => {
+            let mut models = Vec::with_capacity(arr.len());
+            for (i, v) in arr.iter().enumerate() {
+                match v.as_str() {
+                    Some(s) if !s.is_empty() => models.push(s),
+                    _ => return DaemonResponse::err("INVALID_PARAM",
+                        format!("required_models[{}] must be a non-empty string, got: {}", i, v)),
+                }
+            }
+            models
+        }
+        None => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: required_models"),
+    };
+
+    // 调用 SessionGateStore 创建新 session（W3：返回 Result，空列表时报错）
+    match state.session_gate.open(command_type, required_models) {
+        Ok(session_id) => DaemonResponse::ok(serde_json::json!({ "session_id": session_id })),
+        Err(crate::session_gate::SessionGateError::EmptyRequiredModels) => {
+            DaemonResponse::err("INVALID_PARAM", "required_models must not be empty")
+        }
+        Err(e) => DaemonResponse::err("SESSION_GATE_ERROR", format!("open failed: {:?}", e)),
+    }
+}
+
+/// session_gate_submit handler
+///
+/// 向指定 session 提交模型输出。
+/// 自动关闭机制：当所有 required_models 都已提交时，submit 自动关闭 session
+/// 并在响应中返回合并输出（auto_closed=true）。
+///
+/// 参数（args）：
+/// - session_id: String
+/// - model: String — "codex"|"gemini"
+/// - output_type: String
+/// - data: Object
+/// - bypass: bool（可选，默认 false）
+/// - bypass_reason: String（可选）
+///
+/// 返回：
+/// - auto_closed=false: 提交成功，session 保持打开（还有模型未提交）
+/// - auto_closed=true: 提交成功 + session 已自动关闭，附带 CombinedOutput
+fn handle_session_gate_submit(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    // 提取必填参数
+    let session_id = match args["session_id"].as_str() {
+        Some(id) => id,
+        None => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: session_id"),
+    };
+    let model = match args["model"].as_str() {
+        Some(m) => m,
+        None => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: model"),
+    };
+    let output_type = match args["output_type"].as_str() {
+        Some(ot) => ot,
+        None => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: output_type"),
+    };
+    // W3 修复：显式校验 data 参数存在且为 Object
+    let data = match args.get("data") {
+        Some(d) if d.is_object() => d.clone(),
+        Some(d) if d.is_null() => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: data"),
+        Some(d) => return DaemonResponse::err("INVALID_PARAM",
+            format!("data must be a JSON object, got: {}", d)),
+        None => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: data"),
+    };
+
+    // 提取可选参数
+    let bypass = args["bypass"].as_bool().unwrap_or(false);
+    let bypass_reason = args["bypass_reason"].as_str();
+
+    // 调用 SessionGateStore 提交模型输出
+    // submit() 自动检测完成状态：所有模型都已提交时自动关闭 session
+    match state.session_gate.submit(session_id, model, output_type, data, bypass, bypass_reason) {
+        // 自动关闭：所有模型都已提交，session 已自动关闭并返回合并输出
+        Ok(crate::session_gate::SubmitResult::Complete(output)) => {
+            DaemonResponse::ok(serde_json::json!({
+                "ok": true,
+                "auto_closed": true,
+                "partial": output.partial,
+                "missing_models": output.missing_models,
+                "submissions": output.submissions.iter().map(|(k, v)| {
+                    (k.clone(), serde_json::json!({
+                        "data": v.data,
+                        "bypass": v.bypass,
+                        "bypass_reason": v.bypass_reason
+                    }))
+                }).collect::<serde_json::Map<String, serde_json::Value>>()
+            }))
+        }
+        // 尚未完成：还有模型未提交，session 保持打开
+        Ok(crate::session_gate::SubmitResult::Pending) => {
+            DaemonResponse::ok(serde_json::json!({ "ok": true, "auto_closed": false }))
+        }
+        Err(crate::session_gate::SessionGateError::NotFound) => {
+            DaemonResponse::err("SESSION_NOT_FOUND", format!("session not found: {}", session_id))
+        }
+        Err(crate::session_gate::SessionGateError::AlreadyClosed(id)) => {
+            DaemonResponse::err("SESSION_ALREADY_CLOSED", format!("session already closed: {}", id))
+        }
+        // W2 修复：提交的模型不在 required_models 中
+        Err(crate::session_gate::SessionGateError::InvalidModel { model, allowed }) => {
+            DaemonResponse::err("INVALID_MODEL",
+                format!("model '{}' is not in required_models {:?}", model, allowed))
+        }
+        Err(e) => DaemonResponse::err("SESSION_GATE_ERROR", format!("submit failed: {:?}", e)),
+    }
+}
+
+/// session_gate_close handler
+///
+/// 关闭 session，验证所有必须模型已提交，返回合并输出。
+///
+/// 参数（args）：
+/// - session_id: String
+///
+/// 返回：CombinedOutput JSON
+fn handle_session_gate_close(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let session_id = match args["session_id"].as_str() {
+        Some(id) => id,
+        None => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: session_id"),
+    };
+
+    match state.session_gate.close(session_id) {
+        Ok(output) => DaemonResponse::ok(serde_json::json!({
+            "partial": output.partial,
+            "missing_models": output.missing_models,
+            "submissions": output.submissions.iter().map(|(k, v)| {
+                (k.clone(), serde_json::json!({
+                    "data": v.data,
+                    "bypass": v.bypass,
+                    "bypass_reason": v.bypass_reason
+                }))
+            }).collect::<serde_json::Map<String, serde_json::Value>>()
+        })),
+        Err(crate::session_gate::SessionGateError::NotFound) => {
+            DaemonResponse::err("SESSION_NOT_FOUND", format!("session not found: {}", session_id))
+        }
+        Err(crate::session_gate::SessionGateError::SessionIncomplete { missing_models }) => {
+            DaemonResponse::err("SESSION_INCOMPLETE",
+                format!("SESSION_INCOMPLETE: missing_models={:?}", missing_models))
+        }
+        Err(crate::session_gate::SessionGateError::AlreadyClosed(id)) => {
+            DaemonResponse::err("SESSION_ALREADY_CLOSED", format!("session already closed: {}", id))
+        }
+        Err(e) => DaemonResponse::err("SESSION_GATE_ERROR", format!("close failed: {:?}", e)),
+    }
+}
+
+/// session_gate_abort handler
+///
+/// 强制终止 session，无论提交状态如何，清理所有资源。
+///
+/// 参数（args）：
+/// - session_id: String
+/// - reason: String（可选，记录终止原因）
+fn handle_session_gate_abort(state: &AppState, args: &serde_json::Value) -> DaemonResponse {
+    let session_id = match args["session_id"].as_str() {
+        Some(id) => id,
+        None => return DaemonResponse::err("MISSING_PARAM", "missing required parameter: session_id"),
+    };
+
+    match state.session_gate.abort(session_id) {
+        Ok(()) => DaemonResponse::ok(serde_json::json!({ "ok": true })),
+        Err(crate::session_gate::SessionGateError::NotFound) => {
+            DaemonResponse::err("SESSION_NOT_FOUND", format!("session not found: {}", session_id))
+        }
+        Err(e) => DaemonResponse::err("SESSION_GATE_ERROR", format!("abort failed: {:?}", e)),
+    }
+}

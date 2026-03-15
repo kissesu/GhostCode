@@ -83,6 +83,9 @@ pub struct AppState {
     /// 按 (group_id, actor_id, backend) 三元组存储 session_id
     /// 持久化路径: {groups_dir}/.router/sessions.json
     pub session_store: Arc<SessionStore>,
+    /// Session Gate 存储器（Phase 7 新增）
+    /// 多模型审查强制门控：记录各命令的模型提交状态
+    pub session_gate: Arc<crate::session_gate::SessionGateStore>,
 }
 
 /// 构建 SessionStore，持久化路径为 {groups_dir}/.router/sessions.json
@@ -135,6 +138,8 @@ impl AppState {
         let delivery = Arc::new(DeliveryEngine::new());
         // 构建 SessionStore，持久化路径: {groups_dir}/.router/sessions.json
         let session_store = build_session_store(&groups_dir);
+        // W1 修复：在 groups_dir move 之前计算 session_gate 持久化路径
+        let session_gate_path = groups_dir.join(".router").join("session-gate.json");
         Self {
             shutdown: Notify::new(),
             groups_dir,
@@ -148,6 +153,12 @@ impl AppState {
             skill_store: std::sync::Mutex::new(HashMap::new()),
             // Phase 6：挂载 SessionStore，支持 session_list op 读取真实会话数据
             session_store,
+            // Phase 7：Session Gate 存储器
+            // W1 修复：state file 绑定到 groups_dir 实例，避免多 daemon 实例互相覆盖
+            // 路径：{groups_dir}/.router/session-gate.json（与 sessions.json 同级）
+            session_gate: Arc::new(crate::session_gate::SessionGateStore::new(
+                session_gate_path,
+            )),
         }
     }
 

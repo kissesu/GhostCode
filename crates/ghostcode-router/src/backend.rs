@@ -237,11 +237,13 @@ impl Backend for GeminiBackend {
 
     /// 构建 Gemini 命令行参数
     ///
-    /// 参数构建逻辑：
-    /// - new 模式：gemini -m model -o stream-json -y -p
-    /// - resume 模式：gemini -m model -o stream-json -y -r session_id -p
+    /// 参数构建逻辑（不含 -p 和任务文本，由 main.rs 根据传递方式决定）：
+    /// - new 模式：gemini -m model -o stream-json -y
+    /// - resume 模式：gemini -m model -o stream-json -y -r session_id
     ///
-    /// 注意：Gemini CLI 也不支持 -C 标志，工作目录通过进程 cmd.Dir 设置
+    /// 注意：-p 标志由 main.rs 在非 stdin 模式下动态添加，
+    /// 因为 Gemini CLI v0.33.1 中 -p 与 stdin 输入互斥。
+    /// Gemini CLI 也不支持 -C 标志，工作目录通过进程 cmd.Dir 设置。
     /// 参考: ccg-workflow/codeagent-wrapper/backend.go:120-145
     fn build_args(&self, config: &TaskConfig) -> Vec<String> {
         let mut args = Vec::new();
@@ -273,8 +275,10 @@ impl Backend for GeminiBackend {
             }
         }
 
-        // -p 标志（print/prompt 模式）
-        args.push("-p".to_string());
+        // 注意：不在此处添加 -p 标志
+        // Gemini CLI v0.33.1 中 -p 与 stdin 输入互斥，
+        // 由 main.rs 根据实际传递方式（stdin / 参数）动态决定是否使用 -p
+        // 参考: Gemini CLI 错误 "Cannot use both a positional prompt and the --prompt (-p) flag together"
 
         args
     }
