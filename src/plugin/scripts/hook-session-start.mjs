@@ -8,7 +8,7 @@
  *              4. 输出 GhostCode Plugin 启动信息（版本 + skill 数量 + Daemon 状态）
  *
  *              与 PreToolUse 的分工：
- *              - SessionStart: 输出欢迎信息，创建目录，标记会话开始
+ *              - SessionStart: 输出欢迎信息，创建目录，标记会话开始，启动 Dashboard Web
  *              - PreToolUse: 启动 Daemon，获取 Session Lease
  *
  *              幂等保证：
@@ -18,7 +18,7 @@
  * @date 2026-03-05
  */
 
-import { existsSync, mkdirSync, writeFileSync, symlinkSync, readlinkSync, unlinkSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, readlinkSync, unlinkSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -35,6 +35,9 @@ const PLUGIN_VERSION = "0.1.0";
 
 // Hook 状态文件路径（与 hook-pre-tool-use.mjs 和 hook-stop.mjs 共享同一路径）
 const STATE_FILE = join(GHOSTCODE_HOME, "state", "hook-state.json");
+
+// Plugin 根目录（由 run.mjs 注入或从脚本路径推导）
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ============================================
 // Skill 列表：用于计算 skill 数量
@@ -55,15 +58,44 @@ const SKILLS = [
 // ============================================
 
 /**
+ * 读取 Hook 状态文件
+ *
+ * @returns {{ daemonStarted: boolean, socketPath: string|null, leaseId: string|null, webStarted: boolean }}
+ */
+function readState() {
+  try {
+    if (existsSync(STATE_FILE)) {
+      return JSON.parse(readFileSync(STATE_FILE, "utf-8"));
+    }
+  } catch {
+    // 状态文件解析失败时，返回默认状态
+  }
+  return { daemonStarted: false, socketPath: null, leaseId: null, webStarted: false };
+}
+
+/**
+ * 写入 Hook 状态文件
+ *
+ * @param {object} state - 要持久化的状态
+ */
+function writeState(state) {
+  const dir = dirname(STATE_FILE);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
+}
+
+/**
  * SessionStart Hook 主函数
  *
  * 业务逻辑说明：
  * 1. 确保 GhostCode 状态目录存在（首次安装时创建）
  * 2. 如果状态文件不存在，创建初始空状态（daemonStarted: false）
  *    - 如果状态文件已存在，说明 PreToolUse 已写入 Daemon 状态，跳过写入（幂等保护）
- * 3. 输出初始化消息：版本号 + skill 数量 + Daemon 状态
+ * 3. 自动安装 wrapper + prompts（从 Plugin 包 symlink 到 ~/.ghostcode/）
+ * 4. 启动 Dashboard Web 服务（ensureWeb 单实例保证）
+ * 5. 输出初始化消息：版本号 + skill 数量 + Daemon 状态
  */
-function main() {
+async function main() {
   // ============================================
   // 第一步：确保状态目录存在
   // 首次运行时自动创建 ~/.ghostcode/state/ 目录
@@ -94,7 +126,28 @@ function main() {
   setupWrapperAndPrompts();
 
   // ============================================
-  // 第四步：输出初始化消息
+  // 第四步：启动 Dashboard Web 服务（单实例保证）
+  // 在 SessionStart 阶段就启动 Dashboard，无需等到首次工具调用
+  // ensureWeb() 内部有并发保护和幂等检查：
+  // - 已运行 → 直接返回（不打开浏览器）
+  // - 未运行 → spawn 新进程 → 等待就绪 → 打开浏览器
+  // ============================================
+  const state = readState();
+  if (!state.webStarted) {
+    try {
+      const { ensureWeb } = await import(join(PLUGIN_ROOT, "dist", "web.js"));
+      await ensureWeb();
+      state.webStarted = true;
+      writeState(state);
+    } catch (err) {
+      // Dashboard 启动失败不阻断会话建立
+      // 用户仍可通过 /gc-web 命令手动启动，或在 PreToolUse 时重试
+      console.error("[GhostCode] Dashboard 自动启动失败:", err.message || err);
+    }
+  }
+
+  // ============================================
+  // 第五步：输出初始化消息
   // 每次 SessionStart 都输出，让用户感知 GhostCode 已加载
   // 格式：[GhostCode] Plugin vX.Y.Z | N skills loaded | Daemon: pending
   // ============================================
@@ -231,13 +284,12 @@ function setupWrapperAndPrompts() {
 }
 
 // ============================================
-// 入口：执行主逻辑
+// 入口：执行异步主逻辑
 // exit 0 策略：SessionStart 失败不应阻断 Claude Code 会话建立
+// main() 现在是 async（因为需要动态 import ensureWeb），使用 .catch 处理异常
 // ============================================
-try {
-  main();
-} catch (err) {
+main().catch((err) => {
   console.error("[GhostCode] hook-session-start 初始化失败:", err);
   // exit 0：初始化失败不阻断 Claude Code 正常使用
   process.exit(0);
-}
+});

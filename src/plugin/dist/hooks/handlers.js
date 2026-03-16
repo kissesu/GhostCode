@@ -1,5 +1,4 @@
 import { ensureDaemon, stopDaemon, startHeartbeat } from "../daemon.js";
-import { ensureWeb } from "../web.js";
 import { SessionLeaseManager } from "../session-lease.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -32,11 +31,6 @@ async function preToolUseHandler(_event) {
     stopHeartbeat = startHeartbeat(addr);
   } catch {
     console.error("[GhostCode] \u5FC3\u8DF3\u542F\u52A8\u5931\u8D25\uFF0CDaemon \u4ECD\u53EF\u6B63\u5E38\u4F7F\u7528");
-  }
-  try {
-    await ensureWeb();
-  } catch {
-    console.error("[GhostCode] Dashboard \u81EA\u52A8\u542F\u52A8\u5931\u8D25\uFF0C\u53EF\u624B\u52A8\u8FD0\u884C ghostcode-web");
   }
   if (currentLeaseId === null) {
     try {

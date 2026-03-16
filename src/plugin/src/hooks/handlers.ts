@@ -18,7 +18,6 @@
 
 import { ensureDaemon, stopDaemon, startHeartbeat } from "../daemon.js";
 import type { AddrDescriptor } from "../daemon.js";
-import { ensureWeb } from "../web.js";
 import { SessionLeaseManager } from "../session-lease.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -124,18 +123,9 @@ export async function preToolUseHandler(_event: unknown): Promise<void> {
     console.error("[GhostCode] 心跳启动失败，Daemon 仍可正常使用");
   }
 
-  // ============================================
-  // Web Dashboard 自动启动（单实例）
-  // 借鉴 claude-mem 模式：多 session 共享一个 Web Server
-  // 仅首次启动时自动打开浏览器，已运行时跳过
-  // ensureWeb 内部有并发保护和幂等检查
-  // ============================================
-  try {
-    await ensureWeb();
-  } catch {
-    // Web Dashboard 启动失败不影响核心功能
-    console.error("[GhostCode] Dashboard 自动启动失败，可手动运行 ghostcode-web");
-  }
+  // Web Dashboard 自动启动已移至 SessionStart hook（hook-session-start.mjs）
+  // 不再在 PreToolUse 中启动，避免首次工具调用时的延迟
+  // PreToolUse 中的 hook-pre-tool-use.mjs 仍保留 state.webStarted 保护的 fallback
 
   // 获取 session lease（引用计数 +1），记录本会话参与 Daemon 使用
   // 确保只在首次 Daemon 启动时 acquire 一次（幂等保护）

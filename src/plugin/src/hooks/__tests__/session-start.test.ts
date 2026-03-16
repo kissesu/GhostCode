@@ -183,20 +183,27 @@ describe("hook-session-start.mjs - 幂等性", () => {
     expect(stdout).toMatch(/\[GhostCode\]/);
   });
 
-  it("状态文件已存在时，状态文件不应被覆盖（幂等保护）", () => {
-    // 预创建状态文件，写入特定内容
+  it("状态文件已存在时，初始状态写入不应覆盖（幂等保护，webStarted 可追加）", () => {
+    // 预创建状态文件，写入特定内容（包含 webStarted 防止 ensureWeb 触发写入）
     const stateDir = join(tempHome.dir, "state");
     mkdirSync(stateDir, { recursive: true });
     const stateFile = join(stateDir, "hook-state.json");
-    const originalState = JSON.stringify({ daemonStarted: true, socketPath: "/test/socket", leaseId: "test-lease" });
+    const originalState = JSON.stringify(
+      { daemonStarted: true, socketPath: "/test/socket", leaseId: "test-lease", webStarted: true },
+      null,
+      2,
+    );
     writeFileSync(stateFile, originalState, "utf-8");
 
     // 调用脚本
     runScript(tempHome.dir);
 
-    // 验证状态文件内容保持不变
+    // 验证状态文件的核心字段保持不变
+    // webStarted 字段可能被 ensureWeb() 更新，但 daemonStarted/socketPath/leaseId 不应被重置
     const { readFileSync } = require("node:fs");
-    const afterState = readFileSync(stateFile, "utf-8");
-    expect(afterState).toBe(originalState);
+    const afterState = JSON.parse(readFileSync(stateFile, "utf-8"));
+    expect(afterState.daemonStarted).toBe(true);
+    expect(afterState.socketPath).toBe("/test/socket");
+    expect(afterState.leaseId).toBe("test-lease");
   });
 });

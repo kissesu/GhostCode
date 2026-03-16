@@ -5,7 +5,13 @@
 
 ## [Unreleased]
 
-_当前开发中的变更，将在下次版本发布时归入正式版本号。_
+### Fixed
+
+- **Dashboard 自启动时机**: 将 `ensureWeb()` 从 PreToolUse hook 移至 SessionStart hook，会话启动即自动启动 Dashboard Web 端，无需等待首次工具调用
+  - `hook-session-start.mjs`: 转为 async 函数，新增 `ensureWeb()` 调用和状态文件读写
+  - `hooks.json`: SessionStart 改用 `run.mjs` 包装器运行，超时从 5s 增至 15s
+  - `handlers.ts`: 移除 `preToolUseHandler` 中冗余的 `ensureWeb()` 调用
+  - `hook-pre-tool-use.mjs`: 保留 `state.webStarted` 保护的 fallback 路径
 
 ## [0.1.0] - 2026-03-15
 
