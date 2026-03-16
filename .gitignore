@@ -4,8 +4,13 @@ Cargo.lock
 
 # Node.js / TypeScript
 node_modules/
-dist/
 *.js.map
+
+# dist/ 说明：不可忽略！
+# Claude 插件通过 Git clone 安装（非 npm），dist/ 必须在 Git 中
+# 否则 Hook 脚本的 import("dist/web.js") 等动态引用全部失败
+# 参考: oh-my-claudecode 同样将 dist/ 提交到 Git
+# 仅忽略 Rust 的构建产物（/target/ 已在上方配置）
 
 # IDE
 .idea/

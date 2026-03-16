@@ -144,14 +144,15 @@ mkdir -p "$OUTPUT_DIR/skills"
 mkdir -p "$OUTPUT_DIR/scripts"
 
 # ============================================
-# 第二步：复制 TypeScript 编译产物
-# 只需要 index.js（核心模块）和 cli.js（CLI 工具）
-# postinstall.js 在新架构中不再需要
+# 第二步：复制 TypeScript 编译产物（整个 dist/ 目录）
+# tsup bundle: false 模式下，每个源文件独立编译为 dist/ 下的 JS 文件
+# Hook 脚本通过 import("dist/web.js")、import("dist/daemon.js") 等路径
+# 动态引用这些独立模块，因此必须复制完整的 dist/ 目录结构
 # ============================================
 echo "第二步：复制 TypeScript 产物..."
 
 # 验证必须的 JS 入口文件存在
-for entry in index.js cli.js; do
+for entry in index.js cli.js daemon.js web.js session-lease.js; do
   if [[ ! -f "$TS_DIST/$entry" ]]; then
     echo "错误: 缺少 TypeScript 产物: $TS_DIST/$entry" >&2
     echo "      请先运行 pnpm --dir src/plugin run build" >&2
@@ -159,17 +160,14 @@ for entry in index.js cli.js; do
   fi
 done
 
-# 复制两个入口文件
-cp "$TS_DIST/index.js" "$OUTPUT_DIR/dist/index.js"
-cp "$TS_DIST/cli.js" "$OUTPUT_DIR/dist/cli.js"
-echo "  复制: dist/index.js, dist/cli.js"
+# 复制整个 dist/ 目录（保留子目录结构）
+# 排除 .map 和测试文件以减小包体积
+rsync -a --exclude='*.test.js' --exclude='*.test.d.ts' --exclude='__tests__' \
+  "$TS_DIST/" "$OUTPUT_DIR/dist/"
 
-# 复制类型声明（如存在）
-for dts in "$TS_DIST"/*.d.ts; do
-  if [[ -f "$dts" ]]; then
-    cp "$dts" "$OUTPUT_DIR/dist/"
-  fi
-done
+# 统计复制的 JS 文件数量
+JS_COUNT=$(find "$OUTPUT_DIR/dist" -name "*.js" | wc -l | tr -d ' ')
+echo "  复制: dist/ 整目录 ($JS_COUNT 个 JS 文件)"
 
 # ============================================
 # 第三步：复制 Plugin 配置文件
