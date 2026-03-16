@@ -7,6 +7,22 @@
 
 _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 
+## [0.2.2] - 2026-03-16
+
+### Fixed
+
+- **MCP 二进制与源码不同步**: 重新编译 `ghostcode-mcp` 二进制，包含 `detect_group_id` 自动检测逻辑，修复 `GHOSTCODE_GROUP_ID` 环境变量未设置时 group_id 为空导致的 `[INVALID_ARGS] group_id 不能为空` 错误
+  - 根因：`src/plugin/bin/ghostcode-mcp` 在 2026-03-05 编译，但 `detect_group_id()` 在 2026-03-06 才提交，二进制缺少自动检测回退
+
+### Added
+
+- **构建自动化 Makefile**: 根目录新增 `Makefile`，统一管理 Rust + TS + Dashboard 构建与部署
+  - `make build`: 编译全部 Rust crate + 自动同步二进制到 Plugin 和部署目录
+  - `make plugin`: 仅编译 MCP + 同步到 Plugin 目录
+  - `make deploy`: 全量构建 + Dashboard + 部署到 `~/.ghostcode/` + Plugin 缓存
+  - `make test` / `make check`: 全量测试 / 静态检查
+  - `sync-plugin-cache`: 自动扫描并同步所有 Plugin 缓存版本目录，防止二进制不同步
+
 ## [0.2.1] - 2026-03-16
 
 ### Fixed
@@ -148,7 +164,8 @@ _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 - ProcessManager: 支持工作目录和环境变量传递参数
 - Release 流水线：扩展为三组件（ghostcoded + ghostcode-mcp + ghostcode-wrapper）
 
-[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/kissesu/GhostCode/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/kissesu/GhostCode/compare/v0.2.0...v0.2.1
 [0.1.3]: https://github.com/kissesu/GhostCode/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kissesu/GhostCode/compare/v0.1.1...v0.1.2
