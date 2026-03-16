@@ -11,7 +11,7 @@
  *              1. 检查 Web Server 是否已运行（HTTP 健康检查）
  *              2. 未运行则 spawn ghostcode-web 二进制
  *              3. 等待健康检查通过
- *              4. 仅首次启动时打开浏览器（已运行时跳过）
+ *              4. 浏览器打开由调用方决定（ensureWeb 遵循单一职责，只管服务启动）
  *
  *              参考: claude-mem worker-service.cjs — Worker 单实例管理
  *              参考: daemon.ts — ensureDaemon() 模式（PID + ping + spawn）
@@ -23,7 +23,6 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { openURL } from "./utils/browser.js";
 
 // ============================================
 // 常量
@@ -218,7 +217,7 @@ export async function ensureWeb(): Promise<string> {
 async function _doEnsureWeb(): Promise<void> {
   // ============================================
   // 第一步：检查 Web Server 是否已运行
-  // 已运行时直接返回（不打开浏览器）
+  // 已运行时直接返回
   // ============================================
   if (await isWebRunning()) {
     return;
@@ -241,17 +240,8 @@ async function _doEnsureWeb(): Promise<void> {
     );
   }
 
-  // ============================================
-  // 第四步：首次启动成功，自动打开浏览器
-  // 仅在本次确实启动了新进程时打开（已运行时在第一步就返回了）
-  // ============================================
-  try {
-    await openURL(`http://${WEB_HOST}:${WEB_PORT}`);
-  } catch {
-    // 浏览器打开失败不阻断流程（headless 环境或 SSH 场景）
-    console.error("[GhostCode] 浏览器自动打开失败，请手动访问: " +
-      `http://${WEB_HOST}:${WEB_PORT}`);
-  }
+  // 注意：浏览器打开由调用方决定（如 SessionStart hook、gc-web keyword）
+  // ensureWeb 仅负责确保 Web Server 在运行，遵循单一职责原则
 }
 
 /**

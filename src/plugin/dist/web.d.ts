@@ -11,7 +11,7 @@
  *              1. 检查 Web Server 是否已运行（HTTP 健康检查）
  *              2. 未运行则 spawn ghostcode-web 二进制
  *              3. 等待健康检查通过
- *              4. 仅首次启动时打开浏览器（已运行时跳过）
+ *              4. 浏览器打开由调用方决定（ensureWeb 遵循单一职责，只管服务启动）
  *
  *              参考: claude-mem worker-service.cjs — Worker 单实例管理
  *              参考: daemon.ts — ensureDaemon() 模式（PID + ping + spawn）

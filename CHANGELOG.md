@@ -7,6 +7,15 @@
 
 _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 
+## [0.1.3] - 2026-03-16
+
+### Fixed
+
+- **Dashboard 浏览器不自动打开**: 将 `openURL` 从 `ensureWeb()` 内部移至调用方，SessionStart hook 每次新会话主动打开浏览器
+  - 根因：`ensureWeb()` 耦合了"确保服务运行"和"打开浏览器"两个职责，当 Web Server 已在运行（上一会话 detached 进程），`_doEnsureWeb` 检测到已运行后直接返回，不打开浏览器
+  - `web.ts`: 移除 `_doEnsureWeb` 中的 `openURL` 调用，遵循单一职责原则
+  - `hook-session-start.mjs`: `ensureWeb()` 之后主动 import 并调用 `openURL`
+
 ## [0.1.2] - 2026-03-16
 
 ### Fixed
@@ -110,7 +119,8 @@ _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 - ProcessManager: 支持工作目录和环境变量传递参数
 - Release 流水线：扩展为三组件（ghostcoded + ghostcode-mcp + ghostcode-wrapper）
 
-[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/kissesu/GhostCode/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kissesu/GhostCode/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kissesu/GhostCode/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kissesu/GhostCode/releases/tag/v0.1.0

@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { openURL } from "./utils/browser.js";
 const GHOSTCODE_HOME = join(homedir(), ".ghostcode");
 const WEB_BIN_PATH = join(GHOSTCODE_HOME, "bin", "ghostcode-web");
 const WEB_HOST = "127.0.0.1";
@@ -112,11 +111,6 @@ async function _doEnsureWeb() {
     throw new Error(
       `ghostcode-web \u542F\u52A8\u8D85\u65F6\uFF08${WEB_START_TIMEOUT_MS}ms\uFF09\uFF0C\u8BF7\u68C0\u67E5 ${WEB_BIN_PATH} \u662F\u5426\u5B58\u5728\u4E14\u53EF\u6267\u884C`
     );
-  }
-  try {
-    await openURL(`http://${WEB_HOST}:${WEB_PORT}`);
-  } catch {
-    console.error(`[GhostCode] \u6D4F\u89C8\u5668\u81EA\u52A8\u6253\u5F00\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u8BBF\u95EE: http://${WEB_HOST}:${WEB_PORT}`);
   }
 }
 function getWebUrl() {

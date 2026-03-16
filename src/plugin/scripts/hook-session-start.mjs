@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 const GHOSTCODE_HOME = process.env.GHOSTCODE_HOME || join(homedir(), ".ghostcode");
 
 // Plugin 版本号（与 package.json 保持一致）
-const PLUGIN_VERSION = "0.1.2";
+const PLUGIN_VERSION = "0.1.3";
 
 // Hook 状态文件路径（与 hook-pre-tool-use.mjs 和 hook-stop.mjs 共享同一路径）
 const STATE_FILE = join(GHOSTCODE_HOME, "state", "hook-state.json");
@@ -138,7 +138,16 @@ async function main() {
   const state = readState();
   try {
     const { ensureWeb } = await import(join(PLUGIN_ROOT, "dist", "web.js"));
+    const { openURL } = await import(join(PLUGIN_ROOT, "dist", "utils", "browser.js"));
     await ensureWeb();
+    // ensureWeb 仅确保 Web Server 在运行（不打开浏览器）
+    // SessionStart 每次新会话都主动打开浏览器，让用户直接看到 Dashboard
+    try {
+      await openURL("http://127.0.0.1:7070");
+    } catch {
+      // 浏览器打开失败不阻断（headless / SSH 场景）
+      console.error("[GhostCode] 浏览器自动打开失败，请手动访问: http://127.0.0.1:7070");
+    }
     state.webStarted = true;
     writeState(state);
   } catch (err) {
