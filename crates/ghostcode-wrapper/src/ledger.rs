@@ -15,28 +15,47 @@ use ghostcode_types::event::{Event, EventKind};
 
 /// 获取 GhostCode groups 目录的基础路径
 ///
-/// 优先使用 HOME 环境变量，回退到 "." 避免 panic
-fn groups_base_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".ghostcode").join("groups")
+/// 使用 dirs::home_dir() 获取用户主目录，
+/// 不可用时返回 None（调用方应跳过写入）
+fn groups_base_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".ghostcode").join("groups"))
+}
+
+/// 校验 group_id 是否合法（防路径穿越，二次防御）
+///
+/// 安全规则（与 ghostcode-daemon 侧 validate_group_id 对齐）：
+/// 1. 不允许为空
+/// 2. 仅允许字母、数字、连字符、下划线
+///
+/// @param group_id - 待校验的 Group ID
+/// @returns 合法返回 true
+fn is_valid_group_id(group_id: &str) -> bool {
+    !group_id.is_empty()
+        && group_id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 /// 构造账本文件路径
 ///
 /// 格式: ~/.ghostcode/groups/{group_id}/state/ledger/ledger.jsonl
-fn ledger_path(group_id: &str) -> PathBuf {
-    groups_base_dir()
-        .join(group_id)
-        .join("state/ledger/ledger.jsonl")
+/// 返回 None 表示路径不可用（HOME 缺失或 group_id 非法）
+fn ledger_path(group_id: &str) -> Option<PathBuf> {
+    if !is_valid_group_id(group_id) {
+        return None;
+    }
+    groups_base_dir().map(|base| base.join(group_id).join("state/ledger/ledger.jsonl"))
 }
 
 /// 构造账本锁文件路径
 ///
 /// 格式: ~/.ghostcode/groups/{group_id}/state/ledger/ledger.lock
-fn lock_path(group_id: &str) -> PathBuf {
-    groups_base_dir()
-        .join(group_id)
-        .join("state/ledger/ledger.lock")
+/// 返回 None 表示路径不可用
+fn lock_path(group_id: &str) -> Option<PathBuf> {
+    if !is_valid_group_id(group_id) {
+        return None;
+    }
+    groups_base_dir().map(|base| base.join(group_id).join("state/ledger/ledger.lock"))
 }
 
 // ============================================
@@ -46,16 +65,31 @@ fn lock_path(group_id: &str) -> PathBuf {
 /// Best-effort 写入事件到账本
 ///
 /// 业务逻辑：
-/// 1. 构造账本文件路径和锁文件路径
-/// 2. 确保账本目录存在（不存在则创建）
-/// 3. 调用 ghostcode_ledger::append_event 写入
-/// 4. 任何失败仅 warn 日志，不 panic，不阻塞主流程
+/// 1. 校验 group_id 合法性（二次防御，防路径穿越）
+/// 2. 构造账本文件路径和锁文件路径
+/// 3. 确保账本目录存在（不存在则创建）
+/// 4. 调用 ghostcode_ledger::append_event 写入
+/// 5. 任何失败仅 warn 日志，不 panic，不阻塞主流程
 ///
 /// @param group_id - 所属 Group 标识，用于构造路径
 /// @param event - 要写入的事件
-pub fn try_write_event(group_id: &str, event: &Event) {
-    let ledger = ledger_path(group_id);
-    let lock = lock_path(group_id);
+/// @returns true 表示写入成功，false 表示跳过或失败
+pub fn try_write_event(group_id: &str, event: &Event) -> bool {
+    // C1 安全修复：二次校验 group_id，防止路径穿越
+    let ledger = match ledger_path(group_id) {
+        Some(p) => p,
+        None => {
+            tracing::warn!(
+                "[wrapper-ledger] group_id 无效或 HOME 不可用，跳过写入: {:?}",
+                group_id
+            );
+            return false;
+        }
+    };
+    let lock = match lock_path(group_id) {
+        Some(p) => p,
+        None => return false,
+    };
 
     // 确保目录存在，失败则 warn 后返回
     if let Some(parent) = ledger.parent() {
@@ -65,7 +99,7 @@ pub fn try_write_event(group_id: &str, event: &Event) {
                 parent.display(),
                 e
             );
-            return;
+            return false;
         }
     }
 
@@ -75,7 +109,10 @@ pub fn try_write_event(group_id: &str, event: &Event) {
             event.kind,
             e
         );
+        return false;
     }
+
+    true
 }
 
 /// 构造 RouteStart 事件

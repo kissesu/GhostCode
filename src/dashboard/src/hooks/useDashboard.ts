@@ -149,12 +149,34 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
     if (newItems.length === 0) return;
 
     // 处理 route 事件：维护 activeRoutes 状态
+    // C2 修复：先处理 complete/error（移除），再处理 start（添加），
+    // 防止乱序场景下 complete 先到但 start 后到导致僵尸路由
+    const completedIds = new Set<string>();
+
+    // 第一遍：收集所有已完成/错误的 correlationId
+    for (const event of sseEvents) {
+      if (event.kind === 'route.complete' || event.kind === 'route.error') {
+        try {
+          const data = JSON.parse(event.data_summary) as Record<string, unknown>;
+          const corrId = data.correlation_id as string | undefined;
+          if (corrId) {
+            completedIds.add(corrId);
+            activeRoutesRef.current.delete(corrId);
+          }
+        } catch { /* JSON 解析失败忽略 */ }
+      }
+    }
+
+    // 第二遍：处理 start 事件，但跳过已在本批次中完成的路由
     for (const event of sseEvents) {
       if (event.kind === 'route.start') {
         try {
           const data = JSON.parse(event.data_summary) as Record<string, unknown>;
+          const corrId = (data.correlation_id as string | undefined) || event.id;
+          // C2 乱序防御：如果同批事件中已有 complete/error，不再添加
+          if (completedIds.has(corrId)) continue;
           const routeEvent: RouteEvent = {
-            correlationId: (data.correlation_id as string | undefined) || event.id,
+            correlationId: corrId,
             backend: (data.backend as string | undefined) || 'unknown',
             taskSummary: (data.task_summary as string | undefined) || '',
             status: 'running',
@@ -162,16 +184,19 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
           };
           activeRoutesRef.current.set(routeEvent.correlationId, routeEvent);
         } catch { /* JSON 解析失败忽略 */ }
-      } else if (event.kind === 'route.complete' || event.kind === 'route.error') {
-        try {
-          const data = JSON.parse(event.data_summary) as Record<string, unknown>;
-          const corrId = data.correlation_id as string | undefined;
-          if (corrId) {
-            activeRoutesRef.current.delete(corrId);
-          }
-        } catch { /* JSON 解析失败忽略 */ }
       }
     }
+
+    // C2 超时清理：清除超过 120 秒未收到结束事件的僵尸路由
+    const ROUTE_TIMEOUT_MS = 120_000;
+    const now = Date.now();
+    for (const [corrId, route] of activeRoutesRef.current) {
+      const startTime = new Date(route.startTs).getTime();
+      if (now - startTime > ROUTE_TIMEOUT_MS) {
+        activeRoutesRef.current.delete(corrId);
+      }
+    }
+
     setActiveRoutes(Array.from(activeRoutesRef.current.values()));
 
     // W4 修复：新事件显式按时间戳倒序排序，不依赖 SSE 到达顺序

@@ -7,6 +7,19 @@
 
 _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 
+## [0.2.1] - 2026-03-16
+
+### Fixed
+
+- **C1 安全修复: wrapper group_id 路径穿越漏洞**: `ledger.rs` 新增 `is_valid_group_id()` 校验（仅允许 `[A-Za-z0-9_-]+`），`ledger_path()`/`lock_path()` 返回 `Option<PathBuf>`，非法输入时跳过写入
+- **W1 修复: HOME 环境变量缺失回退**: `groups_base_dir()` 改用 `dirs::home_dir()` 替代 `env::var("HOME")`，不可用时返回 None 跳过写入，避免账本写到错误位置
+- **W2 修复: 空字符串 group_id 处理**: `main.rs` 中 `cli.group_id` 为 `Some("")` 时视同 `None`，跳过账本写入
+- **C2 修复: SSE 僵尸路由 + 乱序防御**: `useDashboard.ts` route 事件处理改为两遍策略（先收集 complete/error，再处理 start 并跳过已完成的），新增 120s 超时自动清理僵尸路由
+
+### Changed
+
+- `try_write_event()` 返回 `bool` 而非 `void`，调用方可感知写入成功/失败状态
+
 ## [0.2.0] - 2026-03-16
 
 ### Added
@@ -135,7 +148,8 @@ _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 - ProcessManager: 支持工作目录和环境变量传递参数
 - Release 流水线：扩展为三组件（ghostcoded + ghostcode-mcp + ghostcode-wrapper）
 
-[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/kissesu/GhostCode/compare/v0.2.0...v0.2.1
 [0.1.3]: https://github.com/kissesu/GhostCode/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/kissesu/GhostCode/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kissesu/GhostCode/compare/v0.1.0...v0.1.1

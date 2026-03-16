@@ -234,11 +234,16 @@ async fn main() {
     // 第十步：账本写入 RouteStart 事件
     // 仅在提供 --group-id 时写入，best-effort 不阻塞主流程
     // correlation_id 贯穿 start/complete/error 三个事件
+    //
+    // W2 修复：空字符串 group_id 视同未提供，跳过账本写入
     // ============================================
     let correlation_id = uuid::Uuid::new_v4().simple().to_string();
     let route_start_time = std::time::Instant::now();
 
-    if let Some(ref gid) = cli.group_id {
+    // 过滤空字符串：Some("") -> None
+    let effective_group_id = cli.group_id.as_deref().filter(|s| !s.is_empty());
+
+    if let Some(gid) = effective_group_id {
         // 截取任务文本前 200 字节边界作为摘要，避免 panic
         let summary = safe_truncate(&task_text, 200);
         let event = ledger::route_start_event(gid, &correlation_id, backend_name, summary);
@@ -321,7 +326,7 @@ async fn main() {
             // ============================================
             // 账本写入：RouteError 事件（子进程启动失败）
             // ============================================
-            if let Some(ref gid) = cli.group_id {
+            if let Some(gid) = effective_group_id {
                 let duration_ms = route_start_time.elapsed().as_millis() as u64;
                 let event = ledger::route_error_event(
                     gid,
@@ -382,7 +387,7 @@ async fn main() {
     // 账本写入：RouteComplete 或 RouteError 事件
     // 根据子进程退出码决定写入哪种事件
     // ============================================
-    if let Some(ref gid) = cli.group_id {
+    if let Some(gid) = effective_group_id {
         let duration_ms = route_start_time.elapsed().as_millis() as u64;
         if output.exit_code == 0 {
             // 退出码为 0：写入 RouteComplete，携带输出摘要
