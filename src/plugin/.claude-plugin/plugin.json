@@ -1,6 +1,6 @@
 {
   "name": "gc",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "GhostCode - 多 Agent 协作开发平台，Claude Code Plugin",
   "author": {
     "name": "Atlas.oi"

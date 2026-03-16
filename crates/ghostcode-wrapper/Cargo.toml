@@ -13,6 +13,8 @@ edition = "2021"
 
 [dependencies]
 ghostcode-router = { path = "../ghostcode-router" }
+ghostcode-types = { workspace = true }
+ghostcode-ledger = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -20,3 +22,5 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

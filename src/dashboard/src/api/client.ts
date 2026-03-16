@@ -71,6 +71,29 @@ export interface TimelinePage {
   total: number;
 }
 
+/** Route 事件状态 */
+export type RouteStatus = 'running' | 'completed' | 'error';
+
+/** Route 事件聚合视图（前端合并 start+complete/error 后的完整对象） */
+export interface RouteEvent {
+  /** 关联 ID，贯穿 start/complete/error */
+  correlationId: string;
+  /** AI 后端名称（codex/gemini/claude） */
+  backend: string;
+  /** 任务摘要 */
+  taskSummary: string;
+  /** 当前状态 */
+  status: RouteStatus;
+  /** 开始时间戳 */
+  startTs: string;
+  /** 耗时（毫秒），complete/error 时填充 */
+  durationMs?: number;
+  /** 输出摘要（complete 时填充） */
+  outputSummary?: string;
+  /** 错误信息（error 时填充） */
+  errorMessage?: string;
+}
+
 /** 已学习的 Skill（简化视图） */
 export interface LearnedSkill {
   /** 唯一标识符 */

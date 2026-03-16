@@ -9,6 +9,8 @@
 // @author Atlas.oi
 // @date 2026-03-06
 
+mod ledger;
+
 use std::io::Read;
 use std::path::PathBuf;
 use std::process;
@@ -63,6 +65,10 @@ struct Cli {
     /// 模型名称（Gemini 使用 -m 参数传入，其他后端忽略）
     #[arg(long)]
     model: Option<String>,
+
+    /// Group ID，用于写入账本事件（可选，不传则不写入账本）
+    #[arg(long)]
+    group_id: Option<String>,
 
     /// 从 stdin 读取任务文本（与位置参数互斥）
     /// 等价于传统 Unix 约定中的 `-` 位置参数
@@ -225,7 +231,22 @@ async fn main() {
     };
 
     // ============================================
-    // 第十步：执行 AI CLI 子进程
+    // 第十步：账本写入 RouteStart 事件
+    // 仅在提供 --group-id 时写入，best-effort 不阻塞主流程
+    // correlation_id 贯穿 start/complete/error 三个事件
+    // ============================================
+    let correlation_id = uuid::Uuid::new_v4().simple().to_string();
+    let route_start_time = std::time::Instant::now();
+
+    if let Some(ref gid) = cli.group_id {
+        // 截取任务文本前 200 字节边界作为摘要，避免 panic
+        let summary = safe_truncate(&task_text, 200);
+        let event = ledger::route_start_event(gid, &correlation_id, backend_name, summary);
+        ledger::try_write_event(gid, &event);
+    }
+
+    // ============================================
+    // 第十一步：执行 AI CLI 子进程
     // 使用 ProcessManager::run_command_as 支持主权约束检查
     // ============================================
     let cancel_token = CancellationToken::new();
@@ -297,6 +318,20 @@ async fn main() {
         Err(e) => {
             error!("执行失败: {}", e);
             eprintln!("错误：{}", e);
+            // ============================================
+            // 账本写入：RouteError 事件（子进程启动失败）
+            // ============================================
+            if let Some(ref gid) = cli.group_id {
+                let duration_ms = route_start_time.elapsed().as_millis() as u64;
+                let event = ledger::route_error_event(
+                    gid,
+                    &correlation_id,
+                    backend_name,
+                    duration_ms,
+                    &format!("{}", e),
+                );
+                ledger::try_write_event(gid, &event);
+            }
             process::exit(1);
         }
     };
@@ -344,8 +379,67 @@ async fn main() {
     }
 
     // ============================================
+    // 账本写入：RouteComplete 或 RouteError 事件
+    // 根据子进程退出码决定写入哪种事件
+    // ============================================
+    if let Some(ref gid) = cli.group_id {
+        let duration_ms = route_start_time.elapsed().as_millis() as u64;
+        if output.exit_code == 0 {
+            // 退出码为 0：写入 RouteComplete，携带输出摘要
+            let output_summary = if !agent_messages.is_empty() {
+                let full = agent_messages.join("\n");
+                Some(safe_truncate(&full, 200).to_string())
+            } else {
+                None
+            };
+            let event = ledger::route_complete_event(
+                gid,
+                &correlation_id,
+                backend_name,
+                duration_ms,
+                output_summary.as_deref(),
+            );
+            ledger::try_write_event(gid, &event);
+        } else {
+            // 非零退出码视为错误：写入 RouteError
+            let error_msg = format!("进程退出码: {}", output.exit_code);
+            let event = ledger::route_error_event(
+                gid,
+                &correlation_id,
+                backend_name,
+                duration_ms,
+                &error_msg,
+            );
+            ledger::try_write_event(gid, &event);
+        }
+    }
+
+    // ============================================
     // 第十三步：以子进程退出码退出
     // 保持退出码语义与原始 AI CLI 一致
     // ============================================
     process::exit(output.exit_code);
+}
+
+// ============================================
+// 辅助函数：UTF-8 安全截断
+// ============================================
+
+/// 安全截取字符串前 max_bytes 字节，保证不在多字节字符中间截断
+///
+/// Rust stable 中没有 str::floor_char_boundary，使用 char_indices 手动实现
+///
+/// @param s - 原始字符串
+/// @param max_bytes - 最大字节数
+/// @return 截断后的字符串切片
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // 找到不超过 max_bytes 的最后一个字符边界
+    let mut boundary = max_bytes;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
 }

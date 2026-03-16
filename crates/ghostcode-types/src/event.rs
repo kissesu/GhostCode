@@ -1,6 +1,6 @@
 //! 事件相关类型定义
 //!
-//! EventKind（14 种事件类型）和 Event 结构体
+//! EventKind（21 种事件类型）和 Event 结构体
 //! 参考: cccc/src/cccc/contracts/v1/event.py - 24 种 EventKind（Phase 1 使用 14 种子集）
 //!
 //! @author Atlas.oi
@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 事件类型枚举（Phase 1 子集：14 种）
+/// 事件类型枚举（Phase 1 子集：21 种）
 ///
 /// 序列化格式为点分隔的 snake_case，例如 GroupCreate -> "group.create"
 /// 参考: cccc/src/cccc/contracts/v1/event.py EventKind 枚举
@@ -57,6 +57,14 @@ pub enum EventKind {
     SkillPromoted,
     #[serde(rename = "skill.rejected")]
     SkillRejected,
+
+    // === Route（多模型调用生命周期） ===
+    #[serde(rename = "route.start")]
+    RouteStart,
+    #[serde(rename = "route.complete")]
+    RouteComplete,
+    #[serde(rename = "route.error")]
+    RouteError,
 
     // === Dashboard ===
     #[serde(rename = "dashboard.viewed")]
@@ -149,6 +157,9 @@ impl EventKind {
             EventKind::SkillLearned,
             EventKind::SkillPromoted,
             EventKind::SkillRejected,
+            EventKind::RouteStart,
+            EventKind::RouteComplete,
+            EventKind::RouteError,
             EventKind::DashboardViewed,
         ]
     }

@@ -121,7 +121,7 @@ grep -r "JSON-RPC\|socket\|stdio" src/core/src/ --include="*.rs" -l
 
 **Bash 调用 1（Codex 后端分析）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_TASK'
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'CODEX_TASK'
 ROLE_FILE: ~/.ghostcode/prompts/codex-analyzer.md
 
 你正在探索 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的后端/核心约束边界。
@@ -139,7 +139,7 @@ CODEX_TASK
 
 **Bash 调用 2（Gemini 前端分析）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_TASK'
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'GEMINI_TASK'
 ROLE_FILE: ~/.ghostcode/prompts/gemini-analyzer.md
 
 你正在探索 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的前端/Plugin 约束边界。

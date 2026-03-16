@@ -7,6 +7,22 @@
 
 _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 
+## [0.2.0] - 2026-03-16
+
+### Added
+
+- **Route 事件类型**: 新增 `route.start`/`route.complete`/`route.error` 三种 EventKind，记录多模型调用（Codex/Gemini/Claude）的完整生命周期
+- **Wrapper 账本集成**: `ghostcode-wrapper` 新增 `--group-id` 参数，模型调用前后自动写入 route 事件到账本（best-effort，失败不阻塞）
+- **SKILL.md 传递 group-id**: 所有 gc:* skill 的 wrapper 调用追加 `--group-id "$GHOSTCODE_GROUP_ID"` 参数
+- **RouteTimelineEvent 组件**: Timeline 中 route 事件以复合状态展示（进行中脉冲动画、完成绿色、错误红色）
+- **ActiveRoutesPanel 面板**: 实时展示当前所有进行中的 LLM 调用，含动态计时器
+- **AgentGraph Querying 状态**: Agent 有活动 route 调用时显示紫色 "Querying" 状态
+- **前端 Route 数据层**: `useDashboard` 新增 `activeRoutes` state，基于 `correlationId` 合并 start/complete/error 事件
+
+### Fixed
+
+- **Dashboard 账本路径 Bug**: `dashboard.rs` 中 `ledger_path()` 读取旧路径 `ledger.ndjson`，修正为 `state/ledger/ledger.jsonl`
+
 ## [0.1.3] - 2026-03-16
 
 ### Fixed

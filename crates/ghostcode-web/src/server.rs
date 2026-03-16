@@ -6,6 +6,8 @@
 //! @author Atlas.oi
 //! @date 2026-03-04
 
+use std::path::PathBuf;
+
 use axum::{
     extract::{Path, State},
     http::{header, Method as HttpMethod, StatusCode},
@@ -16,6 +18,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use tower_http::services::{ServeDir, ServeFile};
 use ghostcode_types::ipc::DaemonRequest;
 use std::convert::Infallible;
 use std::time::Duration;
@@ -78,11 +81,26 @@ pub fn build_cors_layer(origins: &[String]) -> CorsLayer {
 /// - GET /api/groups/:group_id/stream - SSE 账本实时流
 /// - GET /api/groups/:group_id/skills - 列出 Skill 候选（W1 新增）
 /// - POST /api/groups/:group_id/skills/:skill_id/promote - 提升 Skill（W1 新增）
+/// - GET /* - Dashboard 静态文件（SPA fallback 到 index.html）
 ///
 /// @param state - Web 应用状态
 /// @returns 配置好路由的 axum Router
 pub fn create_router(state: WebState) -> Router {
-    Router::new()
+    create_router_with_dashboard(state, None)
+}
+
+/// 创建带 Dashboard 静态文件服务的 axum Router
+///
+/// 当提供 dashboard_dir 时，将挂载 ServeDir 静态文件服务：
+/// - API 路由优先匹配（/health, /api/...）
+/// - 未匹配的路由回退到 Dashboard 静态文件
+/// - SPA 模式：未找到的静态文件回退到 index.html（支持前端路由）
+///
+/// @param state - Web 应用状态
+/// @param dashboard_dir - Dashboard 构建产物目录（如 ~/.ghostcode/web），None 时不挂载静态文件
+/// @returns 配置好路由的 axum Router
+pub fn create_router_with_dashboard(state: WebState, dashboard_dir: Option<PathBuf>) -> Router {
+    let api_router = Router::new()
         // 健康检查
         .route("/health", get(handle_health))
         // 自动发现活跃 Group（前端启动时调用）
@@ -106,7 +124,18 @@ pub fn create_router(state: WebState) -> Router {
             "/api/groups/:group_id/skills/:skill_id/promote",
             post(handle_skill_promote),
         )
-        .with_state(state)
+        .with_state(state);
+
+    // 挂载 Dashboard 静态文件服务（SPA 模式）
+    // API 路由优先匹配，未匹配的路由回退到静态文件
+    // 静态文件中未找到的路径回退到 index.html（支持前端客户端路由）
+    if let Some(dir) = dashboard_dir {
+        let index_html = dir.join("index.html");
+        let serve_dir = ServeDir::new(&dir).fallback(ServeFile::new(index_html));
+        api_router.fallback_service(serve_dir)
+    } else {
+        api_router
+    }
 }
 
 /// GET /api/groups/:group_id/stream - SSE 账本实时流

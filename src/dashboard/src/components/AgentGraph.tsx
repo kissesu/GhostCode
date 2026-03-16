@@ -11,12 +11,14 @@
  * @date 2026-03-03
  */
 
-import type { AgentStatusView } from '../api/client';
+import type { AgentStatusView, RouteEvent } from '../api/client';
 
 /** AgentGraph 组件属性 */
 interface AgentGraphProps {
   /** Agent 状态视图数组 */
   agents: AgentStatusView[];
+  /** 当前活动中的 Route 调用（用于显示 Querying 状态） */
+  activeRoutes?: RouteEvent[];
 }
 
 /**
@@ -142,8 +144,11 @@ function formatLastSeen(lastSeen: string | null): string {
 
 /**
  * 单个 Agent 状态卡片
+ *
+ * @param agent - Agent 状态视图
+ * @param isQuerying - 该 Agent 当前是否有活动的 LLM 调用
  */
-function AgentCard({ agent }: { agent: AgentStatusView }) {
+function AgentCard({ agent, isQuerying }: { agent: AgentStatusView; isQuerying: boolean }) {
   // 友好显示名称：优先 display_name → hex ID 截断 → 原始 actor_id
   const displayName = getDisplayName(agent);
   // 类型标签：优先 agent_type → 有意义的 runtime → "subagent"
@@ -180,8 +185,8 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
         >
           {typeLabel}
         </span>
-        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          {agent.status}
+        <span className="text-xs" style={{ color: isQuerying ? 'var(--accent-purple)' : 'var(--text-muted)' }}>
+          {isQuerying ? 'Querying' : agent.status}
         </span>
       </div>
 
@@ -198,7 +203,7 @@ function AgentCard({ agent }: { agent: AgentStatusView }) {
  *
  * @param agents - Agent 状态视图数组
  */
-export function AgentGraph({ agents }: AgentGraphProps) {
+export function AgentGraph({ agents, activeRoutes = [] }: AgentGraphProps) {
   // ============================================
   // 过滤幽灵 Agent：缺少元数据的已停止 hex ID Agent
   // 这些 Agent 因 SubagentStart Hook 未触发而缺少 display_name/agent_type，
@@ -250,9 +255,12 @@ export function AgentGraph({ agents }: AgentGraphProps) {
 
       {/* Agent 列表 */}
       <div className="flex flex-col gap-2">
-        {sortedAgents.map((agent) => (
-          <AgentCard key={agent.actor_id} agent={agent} />
-        ))}
+        {sortedAgents.map((agent) => {
+          // 检查该 Agent 是否有活动的 route 调用
+          // 简化逻辑：如果有任何 active route 且 Agent 状态为 active，标记为 querying
+          const isQuerying = agent.status === 'active' && activeRoutes.length > 0;
+          return <AgentCard key={agent.actor_id} agent={agent} isQuerying={isQuerying} />;
+        })}
       </div>
     </div>
   );

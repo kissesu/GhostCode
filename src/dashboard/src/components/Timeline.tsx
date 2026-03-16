@@ -13,6 +13,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { LedgerTimelineItem } from '../api/client';
+import { RouteTimelineEvent } from './timeline/RouteTimelineEvent';
 
 /** Timeline 组件属性 */
 interface TimelineProps {
@@ -62,6 +63,9 @@ function getKindColor(kind: string): string {
   }
   if (lowerKind.includes('message') || lowerKind.includes('send')) {
     return 'var(--accent-blue)';
+  }
+  if (lowerKind.includes('route')) {
+    return 'var(--accent-purple)';
   }
   if (lowerKind.includes('skill') || lowerKind.includes('learn')) {
     return 'var(--accent-purple)';
@@ -140,6 +144,23 @@ function formatDataSummary(kind: string, rawSummary: string): string {
         const name = data.name as string | undefined;
         const action = kind.split('.')[1];
         return name ? `Skill ${action}: ${name}` : `Skill ${action}`;
+      }
+      case 'route.start': {
+        const backend = data.backend as string | undefined;
+        const taskSummary = data.task_summary as string | undefined;
+        const summary = taskSummary ? (taskSummary.length > 80 ? taskSummary.slice(0, 80) + '...' : taskSummary) : '';
+        return backend ? `[${backend}] ${summary}` : summary;
+      }
+      case 'route.complete': {
+        const backend = data.backend as string | undefined;
+        const durationMs = data.duration_ms as number | undefined;
+        const duration = durationMs != null ? `${(durationMs / 1000).toFixed(1)}s` : '';
+        return backend ? `[${backend}] 完成 ${duration}` : `完成 ${duration}`;
+      }
+      case 'route.error': {
+        const errorMsg = data.error_message as string | undefined;
+        const truncated = errorMsg && errorMsg.length > 100 ? errorMsg.slice(0, 100) + '...' : errorMsg;
+        return truncated ? `错误: ${truncated}` : '路由错误';
       }
       default:
         break;
@@ -257,9 +278,12 @@ export function Timeline({ items }: TimelineProps) {
 
   return (
     <div ref={containerRef} className="flex flex-col h-full overflow-y-auto" data-testid="timeline">
-      {sortedItems.map((item) => (
-        <TimelineItem key={item.id} item={item} />
-      ))}
+      {sortedItems.map((item) => {
+        if (item.kind.startsWith('route.')) {
+          return <RouteTimelineEvent key={item.id} item={item} />;
+        }
+        return <TimelineItem key={item.id} item={item} />;
+      })}
     </div>
   );
 }

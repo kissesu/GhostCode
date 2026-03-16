@@ -31,18 +31,18 @@ fn make_req(op: &str, args: serde_json::Value) -> DaemonRequest {
 
 /// 创建临时账本目录，并写入若干测试事件，返回配置了账本路径的 AppState
 ///
-/// 账本路径约定: {groups_dir}/{group_id}/ledger.ndjson
+/// 账本路径约定: {groups_dir}/{group_id}/state/ledger/ledger.jsonl
 /// 与 dashboard.rs 中的 ledger_path() 函数保持一致
 async fn setup_ledger_with_events(event_count: usize) -> (TempDir, String, AppState) {
     let dir = TempDir::new().expect("创建临时目录失败");
     let group_id = "test-group-001";
 
-    // groups_dir 就是 dir.path()，账本在 {dir}/{group_id}/ledger.ndjson
-    let ledger_path = dir.path().join(group_id).join("ledger.ndjson");
+    // groups_dir 就是 dir.path()，账本在 {dir}/{group_id}/state/ledger/ledger.jsonl
+    let ledger_path = dir.path().join(group_id).join("state/ledger/ledger.jsonl");
     let lock_path = dir.path().join(group_id).join("ledger.lock");
 
-    // 创建 group_id 子目录
-    std::fs::create_dir_all(dir.path().join(group_id)).expect("创建 group 子目录失败");
+    // 创建 group_id 子目录（含账本所在的嵌套路径）
+    std::fs::create_dir_all(dir.path().join(group_id).join("state/ledger")).expect("创建 group 子目录失败");
 
     // 写入测试事件，使用多种 EventKind 和 actor
     let kinds = [
@@ -449,10 +449,10 @@ async fn phase4_dashboard_reflects_skill_events() {
     let dir = TempDir::new().expect("创建临时目录失败");
     let group_id = "skill-group-001";
 
-    // 账本路径: groups_dir/{group_id}/ledger.ndjson
-    let ledger_path = dir.path().join(group_id).join("ledger.ndjson");
+    // 账本路径: groups_dir/{group_id}/state/ledger/ledger.jsonl
+    let ledger_path = dir.path().join(group_id).join("state/ledger/ledger.jsonl");
     let lock_path = dir.path().join(group_id).join("ledger.lock");
-    std::fs::create_dir_all(dir.path().join(group_id)).expect("创建 group 子目录失败");
+    std::fs::create_dir_all(dir.path().join(group_id).join("state/ledger")).expect("创建 group 子目录失败");
 
     // 写入 SkillLearned 事件到账本
     let skill_event = Event::new(

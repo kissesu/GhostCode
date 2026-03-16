@@ -265,7 +265,7 @@ pnpm test && pnpm typecheck
 
 **Bash 调用 1（Codex 后端分析）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_TASK'
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'CODEX_TASK'
 ROLE_FILE: ~/.ghostcode/prompts/codex-analyzer.md
 
 你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）提供 Rust 核心实现参考。
@@ -281,7 +281,7 @@ CODEX_TASK
 
 **Bash 调用 2（Gemini 前端分析）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_TASK'
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'GEMINI_TASK'
 ROLE_FILE: ~/.ghostcode/prompts/gemini-analyzer.md
 
 你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）提供 TS Plugin 实现参考。
@@ -335,7 +335,7 @@ GEMINI_TASK
 
 **Bash 调用 1（Codex 代码审查）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_REVIEW'
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'CODEX_REVIEW'
 ROLE_FILE: ~/.ghostcode/prompts/codex-reviewer.md
 
 你正在对 GhostCode 项目的代码变更进行审查。
@@ -363,7 +363,7 @@ CODEX_REVIEW
 
 **Bash 调用 2（Gemini 代码审查）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_REVIEW'
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'GEMINI_REVIEW'
 ROLE_FILE: ~/.ghostcode/prompts/gemini-reviewer.md
 
 你正在对 GhostCode 项目的代码变更进行审查。

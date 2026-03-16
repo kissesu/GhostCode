@@ -77,7 +77,7 @@ git diff HEAD
 
 **Bash 调用 1（Codex 后端/Rust 审查）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_REVIEW'
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'CODEX_REVIEW'
 ROLE_FILE: ~/.ghostcode/prompts/codex-reviewer.md
 
 你正在对 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的代码变更进行后端审查。
@@ -106,7 +106,7 @@ CODEX_REVIEW
 
 **Bash 调用 2（Gemini 前端/TS Plugin 审查）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_REVIEW'
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'GEMINI_REVIEW'
 ROLE_FILE: ~/.ghostcode/prompts/gemini-reviewer.md
 
 你正在对 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）的代码变更进行前端审查。

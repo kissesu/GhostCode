@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use ghostcode_web::server::{build_cors_layer, create_router};
+use ghostcode_web::server::{build_cors_layer, create_router_with_dashboard};
 use ghostcode_web::state::WebState;
 
 /// Daemon 自举等待超时时间（毫秒）
@@ -51,6 +51,11 @@ pub struct Args {
     /// Daemon Unix Socket 路径（默认从 addr.json 自动解析，或 {base_dir}/daemon/ghostcoded.sock）
     #[arg(long, value_name = "SOCKET")]
     pub daemon_socket: Option<PathBuf>,
+
+    /// Dashboard 静态文件目录（默认 {base_dir}/web）
+    /// 包含 index.html 和 assets/ 等前端构建产物
+    #[arg(long, value_name = "DIR")]
+    pub dashboard_dir: Option<PathBuf>,
 
     /// CORS 允许的源（可多次指定）
     #[arg(long, default_value = "http://localhost:5173")]
@@ -415,10 +420,31 @@ async fn main() -> Result<()> {
 
     // ============================================
     // 第四步：构建 WebState + CORS 中间件 + axum Router
+    //
+    // Dashboard 静态文件目录优先级：
+    //   1. --dashboard-dir 显式指定 → 直接使用
+    //   2. {base_dir}/web 默认路径（需存在 index.html）
+    //   3. 目录不存在或无 index.html → 不挂载静态文件（仅 API 模式）
     // ============================================
     let state = WebState::with_socket(base_dir.clone(), daemon_socket.clone());
     let cors = build_cors_layer(&args.cors_origin);
-    let app = create_router(state).layer(cors);
+
+    // 解析 Dashboard 静态文件目录
+    let dashboard_dir = {
+        let candidate = args.dashboard_dir.unwrap_or_else(|| base_dir.join("web"));
+        if candidate.join("index.html").exists() {
+            tracing::info!("[GhostCode Web] Dashboard 静态文件: {}", candidate.display());
+            Some(candidate)
+        } else {
+            tracing::warn!(
+                "[GhostCode Web] Dashboard 目录不存在或缺少 index.html: {}，仅启用 API 模式",
+                candidate.display()
+            );
+            None
+        }
+    };
+
+    let app = create_router_with_dashboard(state, dashboard_dir).layer(cors);
 
     // ============================================
     // 第五步：绑定 TCP 端口

@@ -100,7 +100,7 @@ grep -r "export function\|export class\|export const" src/plugin/src/ --include=
 
 **Bash 调用 1（Codex 后端分析）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --timeout 600 --stdin <<'CODEX_TASK'
+~/.ghostcode/bin/ghostcode-wrapper --backend codex --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'CODEX_TASK'
 ROLE_FILE: ~/.ghostcode/prompts/codex-analyzer.md
 
 你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）进行 Rust 核心分析规划。
@@ -117,7 +117,7 @@ CODEX_TASK
 
 **Bash 调用 2（Gemini 前端分析）**：
 ```bash
-~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --timeout 600 --stdin <<'GEMINI_TASK'
+~/.ghostcode/bin/ghostcode-wrapper --backend gemini --workdir "$(pwd)" --group-id "$GHOSTCODE_GROUP_ID" --timeout 600 --stdin <<'GEMINI_TASK'
 ROLE_FILE: ~/.ghostcode/prompts/gemini-analyzer.md
 
 你正在为 GhostCode 项目（Rust 核心 + TS Plugin 多 Agent 协作平台）进行 TS Plugin 分析规划。

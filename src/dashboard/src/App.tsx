@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { ActiveRoutesPanel } from './components/ActiveRoutesPanel';
 import { AgentGraph } from './components/AgentGraph';
 import { SkillPanel } from './components/SkillPanel';
 import { Timeline } from './components/Timeline';
@@ -184,6 +185,7 @@ export default function App() {
     sseConnected,
     handlePromoteSkill,
     refresh,
+    activeRoutes,
   } = useDashboard(groupId);
 
   // 正在发现活跃 group
@@ -239,6 +241,7 @@ export default function App() {
         <div className="flex flex-1 min-h-0 gap-0">
           {/* ============================================
               左栏：Agent 状态面板（固定宽度 240px）
+              下方可选显示 Active Routes 面板
               ============================================ */}
           <aside
             className="w-60 shrink-0 flex flex-col border-r overflow-y-auto"
@@ -247,6 +250,7 @@ export default function App() {
               backgroundColor: 'var(--bg-card)',
             }}
           >
+            {/* Agent 标题 */}
             <div
               className="px-3 py-2 text-xs font-semibold border-b shrink-0"
               style={{
@@ -256,9 +260,27 @@ export default function App() {
             >
               Agents
             </div>
-            <div className="p-2 flex-1 overflow-y-auto">
-              <AgentGraph agents={snapshot?.agents ?? []} />
+            <div className="p-2 overflow-y-auto">
+              <AgentGraph agents={snapshot?.agents ?? []} activeRoutes={activeRoutes} />
             </div>
+
+            {/* Active Routes 面板：仅当有活动路由时显示 */}
+            {activeRoutes.length > 0 && (
+              <>
+                <div
+                  className="px-3 py-2 text-xs font-semibold border-t border-b shrink-0"
+                  style={{
+                    color: 'var(--text-secondary)',
+                    borderColor: 'var(--border-subtle)',
+                  }}
+                >
+                  Active Routes ({activeRoutes.length})
+                </div>
+                <div className="p-2 overflow-y-auto">
+                  <ActiveRoutesPanel activeRoutes={activeRoutes} />
+                </div>
+              </>
+            )}
           </aside>
 
           {/* ============================================

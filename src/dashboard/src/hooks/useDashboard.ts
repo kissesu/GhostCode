@@ -17,6 +17,7 @@ import type {
   DashboardSnapshot,
   LearnedSkill,
   LedgerTimelineItem,
+  RouteEvent,
 } from '../api/client';
 import { fetchDashboard, fetchSkills, promoteSkill } from '../api/client';
 import { useSSE } from './useSSE';
@@ -37,6 +38,8 @@ export interface UseDashboardResult {
   handlePromoteSkill: (skillId: string) => Promise<void>;
   /** 手动刷新快照 */
   refresh: () => void;
+  /** 当前活动中的 Route 调用（尚未 complete/error） */
+  activeRoutes: RouteEvent[];
 }
 
 /**
@@ -56,6 +59,10 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
   const [skills, setSkills] = useState<LearnedSkill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // 活动中的 Route 调用，以 correlationId 为 key
+  const activeRoutesRef = useRef<Map<string, RouteEvent>>(new Map());
+  const [activeRoutes, setActiveRoutes] = useState<RouteEvent[]>([]);
 
   // 用于去重的已知事件 ID 集合
   // W4-review：Set 有清理机制，在 loadInitialData 时重置，
@@ -77,6 +84,8 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
     setLoading(true);
     setError(null);
     knownEventIdsRef.current = new Set();
+    activeRoutesRef.current = new Map();
+    setActiveRoutes([]);
 
     try {
       const [snap, skillList] = await Promise.all([
@@ -138,6 +147,32 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
     }
 
     if (newItems.length === 0) return;
+
+    // 处理 route 事件：维护 activeRoutes 状态
+    for (const event of sseEvents) {
+      if (event.kind === 'route.start') {
+        try {
+          const data = JSON.parse(event.data_summary) as Record<string, unknown>;
+          const routeEvent: RouteEvent = {
+            correlationId: (data.correlation_id as string | undefined) || event.id,
+            backend: (data.backend as string | undefined) || 'unknown',
+            taskSummary: (data.task_summary as string | undefined) || '',
+            status: 'running',
+            startTs: event.ts,
+          };
+          activeRoutesRef.current.set(routeEvent.correlationId, routeEvent);
+        } catch { /* JSON 解析失败忽略 */ }
+      } else if (event.kind === 'route.complete' || event.kind === 'route.error') {
+        try {
+          const data = JSON.parse(event.data_summary) as Record<string, unknown>;
+          const corrId = data.correlation_id as string | undefined;
+          if (corrId) {
+            activeRoutesRef.current.delete(corrId);
+          }
+        } catch { /* JSON 解析失败忽略 */ }
+      }
+    }
+    setActiveRoutes(Array.from(activeRoutesRef.current.values()));
 
     // W4 修复：新事件显式按时间戳倒序排序，不依赖 SSE 到达顺序
     newItems.sort((a, b) => {
@@ -230,5 +265,6 @@ export function useDashboard(groupId: string | null, baseUrl = ''): UseDashboard
     sseConnected,
     handlePromoteSkill,
     refresh,
+    activeRoutes,
   };
 }

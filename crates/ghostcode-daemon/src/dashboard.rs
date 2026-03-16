@@ -6,7 +6,7 @@
 //! - handle_dashboard_agents: 统计 Agent 状态
 //!
 //! 账本路径由 AppState.groups_dir + group_id 构造：
-//! {groups_dir}/{group_id}/ledger.ndjson
+//! {groups_dir}/{group_id}/state/ledger/ledger.jsonl
 //!
 //! 账本文件不存在时优雅返回空结果（不报错）
 //!
@@ -23,13 +23,13 @@ use crate::server::AppState;
 
 /// 构造账本文件路径
 ///
-/// 格式: {groups_dir}/{group_id}/ledger.ndjson
+/// 格式: {groups_dir}/{group_id}/state/ledger/ledger.jsonl
 ///
 /// @param state - 共享应用状态
 /// @param group_id - Group ID
 /// @returns 账本文件绝对路径
 fn ledger_path(state: &AppState, group_id: &str) -> PathBuf {
-    state.groups_dir.join(group_id).join("ledger.ndjson")
+    state.groups_dir.join(group_id).join("state/ledger/ledger.jsonl")
 }
 
 /// 校验 group_id 是否合法，防止路径穿越攻击
