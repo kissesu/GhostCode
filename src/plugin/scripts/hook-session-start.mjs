@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 const GHOSTCODE_HOME = process.env.GHOSTCODE_HOME || join(homedir(), ".ghostcode");
 
 // Plugin 版本号（与 package.json 保持一致）
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 
 // Hook 状态文件路径（与 hook-pre-tool-use.mjs 和 hook-stop.mjs 共享同一路径）
 const STATE_FILE = join(GHOSTCODE_HOME, "state", "hook-state.json");

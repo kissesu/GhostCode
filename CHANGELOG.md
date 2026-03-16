@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+_当前开发中的变更，将在下次版本发布时归入正式版本号。_
+
+## [0.1.1] - 2026-03-16
+
 ### Fixed
 
 - **Dashboard 自启动时机**: 将 `ensureWeb()` 从 PreToolUse hook 移至 SessionStart hook，会话启动即自动启动 Dashboard Web 端，无需等待首次工具调用
@@ -98,5 +102,6 @@
 - ProcessManager: 支持工作目录和环境变量传递参数
 - Release 流水线：扩展为三组件（ghostcoded + ghostcode-mcp + ghostcode-wrapper）
 
-[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/kissesu/GhostCode/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kissesu/GhostCode/releases/tag/v0.1.0
