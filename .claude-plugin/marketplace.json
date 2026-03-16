@@ -9,7 +9,7 @@
     {
       "name": "gc",
       "description": "GhostCode Plugin - 多 Agent 协作、智能路由、Skill 驱动的开发体验增强",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "author": {
         "name": "Atlas.oi"
       },
@@ -25,5 +25,5 @@
       ]
     }
   ],
-  "version": "0.1.1"
+  "version": "0.1.2"
 }

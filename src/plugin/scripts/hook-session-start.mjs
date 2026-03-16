@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 const GHOSTCODE_HOME = process.env.GHOSTCODE_HOME || join(homedir(), ".ghostcode");
 
 // Plugin 版本号（与 package.json 保持一致）
-const PLUGIN_VERSION = "0.1.1";
+const PLUGIN_VERSION = "0.1.2";
 
 // Hook 状态文件路径（与 hook-pre-tool-use.mjs 和 hook-stop.mjs 共享同一路径）
 const STATE_FILE = join(GHOSTCODE_HOME, "state", "hook-state.json");
@@ -128,22 +128,23 @@ async function main() {
   // ============================================
   // 第四步：启动 Dashboard Web 服务（单实例保证）
   // 在 SessionStart 阶段就启动 Dashboard，无需等到首次工具调用
-  // ensureWeb() 内部有并发保护和幂等检查：
-  // - 已运行 → 直接返回（不打开浏览器）
+  //
+  // 每次新会话都无条件调用 ensureWeb()，不依赖 webStarted 标记
+  // 原因：状态文件跨会话持久化，旧会话的 webStarted=true 会导致新会话跳过启动
+  // ensureWeb() 内部有幂等保护（health check），重复调用是安全的：
+  // - 已运行 → health check 通过 → 直接返回（不打开浏览器）
   // - 未运行 → spawn 新进程 → 等待就绪 → 打开浏览器
   // ============================================
   const state = readState();
-  if (!state.webStarted) {
-    try {
-      const { ensureWeb } = await import(join(PLUGIN_ROOT, "dist", "web.js"));
-      await ensureWeb();
-      state.webStarted = true;
-      writeState(state);
-    } catch (err) {
-      // Dashboard 启动失败不阻断会话建立
-      // 用户仍可通过 /gc-web 命令手动启动，或在 PreToolUse 时重试
-      console.error("[GhostCode] Dashboard 自动启动失败:", err.message || err);
-    }
+  try {
+    const { ensureWeb } = await import(join(PLUGIN_ROOT, "dist", "web.js"));
+    await ensureWeb();
+    state.webStarted = true;
+    writeState(state);
+  } catch (err) {
+    // Dashboard 启动失败不阻断会话建立
+    // 用户仍可通过 /gc-web 命令手动启动，或在 PreToolUse 时重试
+    console.error("[GhostCode] Dashboard 自动启动失败:", err.message || err);
   }
 
   // ============================================

@@ -1,6 +1,6 @@
 {
   "name": "@atlas-ghost/ghostcode",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "GhostCode - 多 Agent 协作开发平台，Claude Code Plugin",
   "type": "module",
   "skills": "./skills/",

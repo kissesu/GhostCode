@@ -7,6 +7,14 @@
 
 _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 
+## [0.1.2] - 2026-03-16
+
+### Fixed
+
+- **Dashboard 自启动跨会话失效**: 移除 `hook-session-start.mjs` 中 `if (!state.webStarted)` 条件判断，改为每次 SessionStart 无条件调用 `ensureWeb()`
+  - 根因：状态文件 `hook-state.json` 跨会话持久化，旧会话的 `webStarted=true` 导致新会话跳过 Dashboard 启动
+  - `ensureWeb()` 内部已通过 health check 实现幂等，重复调用安全无副作用
+
 ## [0.1.1] - 2026-03-16
 
 ### Fixed
@@ -102,6 +110,7 @@ _当前开发中的变更，将在下次版本发布时归入正式版本号。_
 - ProcessManager: 支持工作目录和环境变量传递参数
 - Release 流水线：扩展为三组件（ghostcoded + ghostcode-mcp + ghostcode-wrapper）
 
-[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/kissesu/GhostCode/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/kissesu/GhostCode/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/kissesu/GhostCode/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/kissesu/GhostCode/releases/tag/v0.1.0
