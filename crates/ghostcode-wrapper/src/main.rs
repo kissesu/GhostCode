@@ -263,8 +263,10 @@ async fn main() {
 
     // ============================================
     // 工作目录传递策略（参考 ccg-workflow/codeagent-wrapper/executor.go:980-984）
-    // - Codex: 通过 -C 标志传入工作目录（已在 backend.rs 的 build_args 中处理），
-    //          此处不传 workdir 避免与 -C 冲突
+    // - Codex: 通过 cmd.current_dir() 设置进程 cwd（不使用 -C 参数）
+    //          原因：Codex CLI 会将 -C 参数路径写入 websocket header，
+    //          非 ASCII 字符（中文路径）会导致 UTF-8 编码错误。
+    //          Codex 默认使用进程 cwd 作为项目根目录，无需 -C。
     // - Claude: 不支持 -C 标志，必须通过进程 cwd（cmd.current_dir）设置
     // - Gemini: 使用系统临时目录作为进程 cwd，完全绕过 fdir 文件扫描
     //
@@ -283,7 +285,7 @@ async fn main() {
         process::exit(1);
     });
     let process_workdir: Option<&std::path::Path> = match &cli.backend {
-        BackendKind::Codex => None,
+        BackendKind::Codex => Some(workdir.as_path()),
         BackendKind::Claude => Some(workdir.as_path()),
         BackendKind::Gemini => Some(gemini_sandbox.path()),
     };

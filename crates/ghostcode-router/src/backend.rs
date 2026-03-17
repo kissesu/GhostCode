@@ -111,8 +111,14 @@ impl Backend for CodexBackend {
     /// 构建 Codex 命令行参数
     ///
     /// 参数构建逻辑：
-    /// - new 模式：codex e --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C workdir --json
+    /// - new 模式：codex e --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json
     /// - resume 模式：codex e --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json resume session_id
+    ///
+    /// 工作目录策略：
+    /// 不再通过 -C 参数传递工作目录路径，改由调用方通过 cmd.current_dir() 设置进程 cwd。
+    /// 原因：Codex CLI 会将 -C 参数的路径写入 x-codex-turn-metadata websocket header，
+    /// 当路径包含非 ASCII 字符（如中文）时会触发 UTF-8 编码错误导致 WebSocket 连接失败。
+    /// 通过进程 cwd 设置工作目录可完全规避此问题，Codex 默认使用 cwd 作为项目根目录。
     ///
     /// 参考: ccg-workflow/codeagent-wrapper/executor.go:757-799
     fn build_args(&self, config: &TaskConfig) -> Vec<String> {
@@ -125,24 +131,18 @@ impl Backend for CodexBackend {
 
         match &config.mode {
             TaskMode::Resume => {
-                // Resume 模式：不传 -C workdir，改为传 resume session_id
+                // Resume 模式：传 resume session_id
                 // 参考: ccg-workflow/codeagent-wrapper/executor.go:785-791
+                args.push(CODEX_JSON_FLAG.to_string());
                 if let Some(session_id) = &config.session_id {
-                    args.push(CODEX_JSON_FLAG.to_string());
                     args.push("resume".to_string());
                     args.push(session_id.clone());
-                } else {
-                    // session_id 为空时，退化为 new 模式处理（暴露问题而非隐藏）
-                    args.push(CODEX_JSON_FLAG.to_string());
-                    args.push("-C".to_string());
-                    args.push(config.workdir.to_string_lossy().to_string());
                 }
+                // session_id 为空时仅传 --json，工作目录由进程 cwd 提供
             }
             TaskMode::New => {
-                // New 模式：传入 -C workdir 指定工作目录
-                // 参考: ccg-workflow/codeagent-wrapper/executor.go:793-798
-                args.push("-C".to_string());
-                args.push(config.workdir.to_string_lossy().to_string());
+                // New 模式：工作目录由调用方通过 cmd.current_dir() 设置，不使用 -C 参数
+                // 避免非 ASCII 路径被 Codex CLI 写入 websocket header 导致 UTF-8 编码错误
                 args.push(CODEX_JSON_FLAG.to_string());
             }
         }

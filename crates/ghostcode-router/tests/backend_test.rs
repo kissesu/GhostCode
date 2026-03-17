@@ -32,7 +32,8 @@ fn codex_new_args_contain_required_flags() {
     assert!(args.contains(&"--json".to_string()));
 }
 
-/// 测试：Codex new 模式参数必须包含工作目录 -C 标志
+/// 测试：Codex new 模式参数不包含 -C 标志（工作目录改由 cmd.current_dir 设置）
+/// 原因：Codex CLI 会将 -C 路径写入 websocket header，非 ASCII 路径会导致 UTF-8 编码错误
 #[test]
 fn codex_new_args_contain_workdir() {
     let backend = CodexBackend;
@@ -44,8 +45,10 @@ fn codex_new_args_contain_workdir() {
         timeout: Duration::from_secs(3600),
     };
     let args = backend.build_args(&config);
-    let c_idx = args.iter().position(|a| a == "-C").unwrap();
-    assert_eq!(args[c_idx + 1], "/my/project");
+    // -C 不应出现在参数中，工作目录由进程 cwd 提供
+    assert!(!args.contains(&"-C".to_string()));
+    // 必须包含 --json 输出标志
+    assert!(args.contains(&"--json".to_string()));
 }
 
 /// 测试：Codex resume 模式不包含 -C 工作目录，但包含 resume 和 session_id

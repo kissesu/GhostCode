@@ -167,7 +167,7 @@ impl ProcessManager {
     /// @param stdin_data - 可选的 stdin 数据
     /// @param timeout - 超时时间
     /// @param cancel - 取消令牌
-    /// @param workdir - 可选的工作目录（Claude/Gemini 使用，Codex 跳过）
+    /// @param workdir - 可选的工作目录（所有后端统一通过 cmd.current_dir 设置）
     /// @param envs - 可选的环境变量列表，追加到子进程环境中（不清除已有环境）
     /// @returns Ok(ProcessOutput) - 成功执行的结果
     /// @returns Err(ProcessError) - 主权违规/超时/取消/失败/IO 错误
@@ -202,8 +202,9 @@ impl ProcessManager {
 
         // ============================================
         // 工作目录设置（参考 ccg-workflow/codeagent-wrapper/executor.go:980-984）
-        // Claude/Gemini 不支持 -C 标志，必须通过进程 cwd 设置工作目录
-        // Codex 通过 -C 标志传入工作目录，调用方不传 workdir 来跳过此处设置
+        // 所有后端统一通过 cmd.current_dir() 设置进程工作目录。
+        // Codex 不再使用 -C 参数传递路径，因为 Codex CLI 会将 -C 路径
+        // 写入 websocket header，非 ASCII 字符会导致 UTF-8 编码错误。
         // ============================================
         if let Some(dir) = workdir {
             cmd.current_dir(dir);
